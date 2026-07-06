@@ -1,0 +1,406 @@
+---
+title: "Pricing Calibration Diagnostics"
+subtitle: "Calibration and Revenue Analysis" 
+author: "Mikus"
+date: "`r Sys.Date()`"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+
+# Set working directory/project root 
+project_root <- "/Users/mikusdev/thesis-simulation"
+
+has_kableExtra <- requireNamespace("kableExtra", quietly = TRUE)
+if (has_kableExtra) {
+  library(kableExtra)
+}
+
+print_table <- function(df, caption) {
+  if (has_kableExtra) {
+    df %>%
+      kable(caption = caption, align = "r") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+  } else {
+    kable(df, caption = caption, align = "r")
+  }
+}
+
+# color palette
+scenario_colors <- c(
+  "Passive" = "#1F4E79",
+  "Pricing Only" = "#D95F8D",
+  "Rebalancing Only" = "#56B4E9",
+  "Interaction" = "#8E44AD",
+  "Governance" = "#4C956C"
+)
+
+# Custom ggplot theme
+theme_thesis <- function() {
+  theme_minimal(base_size = 13, base_family = "sans") +
+  theme(
+    text = element_text(color = "#1a1a1a"),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5, color = "#1a1a1a"),
+    axis.title = element_text(face = "bold", size = 12, color = "#1a1a1a"),
+    axis.text = element_text(size = 11, color = "#1a1a1a"),
+    panel.grid.major = element_line(color = "grey93", linewidth = 0.5),
+    panel.grid.minor = element_blank(),
+    legend.title = element_text(face = "bold", size = 11),
+    legend.text = element_text(size = 10),
+    plot.margin = margin(12, 12, 12, 12)
+  )
+}
+```
+
+## 1. Purpose
+
+This report investigates the pricing behavior observed in the simulation results. It summarizes the calibration checks, fleet size sensitivity, pricing sensitivity, revenue decomposition, and spatial diagnostics used to explain the pricing outcomes discussed in the thesis.
+
+---
+
+## Fleet Size Robustness
+
+This section evaluates how fleet size affects operational performance and revenue in the Interaction scenario. Fleet sizes between 40 and 100 vehicles were evaluated using 50 simulation runs per configuration.
+
+```{r load_fleet_data}
+df_fleet <- read_csv("../Data/PricingDiagnostics/revenue_decomposition_fleet_size.csv")
+
+# Format columns for display
+table_fleet <- df_fleet %>%
+  transmute(
+    `Fleet Size (N)` = as.integer(fleet_size),
+    `Service Rate` = sprintf("%.2f%%", service_rate * 100),
+    `Overload Freq.` = sprintf("%.2f%%", overload_frequency * 100),
+    `Completed Trips` = round(completed_trips, 1),
+    `Total Revenue` = sprintf("$%.2f", total_revenue),
+    `Revenue / Vehicle` = sprintf("$%.2f", revenue_per_vehicle),
+    `Average Price` = sprintf("$%.2f", average_price),
+    `Avg. Idle Vehicles` = round(average_idle_vehicles, 2),
+    `Idle Share` = sprintf("%.2f%%", idle_share * 100)
+  )
+
+print_table(table_fleet, "Table 1: Fleet Size Sensitivity Decomposition (Interaction Scenario)")
+```
+### Visualizations
+
+#### Total Revenue vs. Fleet Size
+![](../Data/PricingDiagnostics/PNG/fleet_size_vs_total_revenue.png){width=75%}
+
+
+#### Revenue per Vehicle vs. Fleet Size
+![](../Data/PricingDiagnostics/PNG/fleet_size_vs_revenue_per_vehicle.png){width=75%}
+
+
+#### Average Idle Vehicles vs. Fleet Size
+![](../Data/PricingDiagnostics/PNG/fleet_size_vs_avg_idle_vehicles.png){width=75%}
+
+
+#### Service Rate vs. Fleet Size
+![](../Data/PricingDiagnostics/PNG/fleet_size_vs_service_rate.png){width=75%}
+
+---
+
+## 3. Pricing Sensitivity Robustness
+
+This analysis evaluates whether the observed pricing behavior depends on the pricing sensitivity parameter α. The fleet size remains fixed at N = 80 while α is varied.
+
+```{r load_alpha_data}
+df_alpha <- read_csv("../Data/PricingDiagnostics/calibration_alpha_robustness.csv")
+
+table_alpha <- df_alpha %>%
+  transmute(
+    Alpha = alpha,
+    `Service Rate` = sprintf("%.2f%%", service_rate * 100),
+    `Overload Freq.` = sprintf("%.2f%%", overload_frequency * 100),
+    `Revenue / Vehicle` = sprintf("$%.2f", revenue_per_vehicle),
+    `Price Volatility` = sprintf("%.3f", price_volatility),
+    `Average Price` = sprintf("$%.2f", average_price),
+    `Completed Trips` = round(completed_trips, 1)
+  )
+
+print_table(table_alpha, "Table 2: Pricing Sensitivity (Alpha) Robustness (Interaction, N=80)")
+```
+
+### Visualizations
+
+#### Revenue per Vehicle vs. Pricing Sensitivity (Alpha)
+![](../Data/PricingDiagnostics/PNG/alpha_vs_revenue_per_vehicle.png){width=75%}
+
+#### Average Price vs. Pricing Sensitivity (Alpha)
+![](../Data/PricingDiagnostics/PNG/alpha_vs_average_price.png){width=75%}
+
+#### Price Volatility vs. Pricing Sensitivity (Alpha)
+![](../Data/PricingDiagnostics/PNG/alpha_vs_price_volatility.png){width=75%}
+
+---
+
+## 4. Revenue Decomposition across Main Scenarios
+
+This section compares the main simulation scenarios to separate the effects of completed trips, average prices, and total revenue.
+
+```{r load_scenarios_data}
+df_scenarios <- read_csv("../Data/PricingDiagnostics/revenue_decomposition_main_scenarios.csv")
+
+# Map to clean capitalized labels
+df_scenarios <- df_scenarios %>%
+  mutate(
+    scenario_label = case_when(
+      scenario == "passive" ~ "Passive",
+      scenario == "pricing_only" ~ "Pricing Only",
+      scenario == "rebalancing_only" ~ "Rebalancing Only",
+      scenario == "interaction" ~ "Interaction",
+      scenario == "governance" ~ "Governance",
+      TRUE ~ scenario
+    )
+  )
+
+table_scenarios <- df_scenarios %>%
+  transmute(
+    Scenario = scenario_label,
+    `Service Rate` = sprintf("%.2f%%", service_rate * 100),
+    `Overload Freq.` = sprintf("%.2f%%", overload_frequency * 100),
+    `Completed Trips` = round(completed_trips, 1),
+    `Total Revenue` = sprintf("$%.2f", total_revenue),
+    `Revenue / Vehicle` = sprintf("$%.2f", revenue_per_vehicle),
+    `Rev / Completed Trip` = sprintf("$%.2f", revenue_per_completed_trip),
+    `Average Price` = sprintf("$%.2f", average_price),
+    `Avg. Idle Vehicles` = round(average_idle_vehicles, 2),
+    `Idle Share` = sprintf("%.2f%%", idle_share * 100),
+    `Mismatch (Imbalance)` = sprintf("%.3f", demand_supply_mismatch)
+  )
+
+print_table(table_scenarios, "Table 3: Scenario Performance & Revenue Decomposition (N=80 Baseline)")
+```
+
+### Visualizations
+
+Trade-off between volume and unit fare:
+
+#### Completed Trips vs. Revenue per Completed Trip by Scenario
+![](../Data/PricingDiagnostics/PNG/completed_trips_vs_revenue_per_completed_trip.png){width=75%}
+
+---
+
+## 5. Capacity-Regime Scenario Comparison
+
+Scenario performance is compared across different fleet sizes (N = 40, 60, and 80) to evaluate how physical capacity influences pricing and operational performance.
+```{r load_comparison_data}
+df_scarcity <- read_csv("../Data/PricingDiagnostics/capacity_regime_scenario_comparison.csv")
+
+# Extract matching scenarios for N=80 from df_scenarios
+df_scenarios_80 <- df_scenarios %>%
+  filter(scenario %in% c("passive", "pricing_only", "rebalancing_only", "interaction")) %>%
+  mutate(fleet_size = 80) %>%
+  select(colnames(df_scarcity))
+
+df_comparison <- bind_rows(df_scarcity, df_scenarios_80) %>%
+  arrange(fleet_size, scenario) %>%
+  mutate(
+    scenario_label = case_when(
+      scenario == "passive" ~ "Passive",
+      scenario == "pricing_only" ~ "Pricing Only",
+      scenario == "rebalancing_only" ~ "Rebalancing Only",
+      scenario == "interaction" ~ "Interaction",
+      TRUE ~ scenario
+    )
+  )
+
+table_comparison <- df_comparison %>%
+  transmute(
+    Scenario = scenario_label,
+    `Fleet Size (N)` = as.integer(fleet_size),
+    `Service Rate` = sprintf("%.2f%%", service_rate * 100),
+    `Completed Trips` = round(completed_trips, 1),
+    `Total Revenue` = sprintf("$%.2f", total_revenue),
+    `Revenue / Vehicle` = sprintf("$%.2f", revenue_per_vehicle),
+    `Average Price` = sprintf("$%.2f", average_price),
+    `Avg. Idle Vehicles` = round(average_idle_vehicles, 2),
+    `Idle Share` = sprintf("%.2f%%", idle_share * 100)
+  )
+
+print_table(table_comparison, "Table 4: Scenario Performance Across Capacity Regimes (N=40, N=60, N=80)")
+```
+
+### Visualizations
+
+Total Revenue across scenarios and capacity levels.
+
+#### Total Revenue by Scenario and Fleet Size
+![](../Data/PricingDiagnostics/PNG/scenario_comparison_total_revenue.png){width=75%}
+
+---
+
+## 6. Spatial Flow Diagnostic
+
+This section summarizes the spatial distribution of vehicles in the baseline Interaction scenario ($N = 80$). The following tables show vehicle allocation, idle vehicles, and serving and rebalancing flows across all zones.
+
+### Table 5: Spatial Distribution & Operational Metrics
+
+| Zone | Avg. Assigned Vehicles | Avg. Idle Vehicles | Avg. Total Arrivals | Avg. Total Departures | Avg. Effective Demand | Avg. Completed Trips |
+|---|---:|---:|---:|---:|---:|---:|
+| **R1** | 4.1365 | 0.5484 | 2.0360 | 2.0630 | 2.6325 | 1.5218 |
+| **R2** | 4.2922 | 0.6364 | 2.0648 | 2.0920 | 2.7144 | 1.5266 |
+| **R3** | 4.3850 | 0.6882 | 2.0868 | 2.1115 | 2.7841 | 1.5281 |
+| **R4** | 4.4903 | 0.7707 | 2.0939 | 2.1187 | 2.8387 | 1.5304 |
+| **C** | 46.4782 | 29.0348 | 7.4781 | 7.4441 | 5.9827 | 7.4773 |
+| **A** | 16.2180 | 4.2523 | 3.5063 | 3.5251 | 4.1610 | 3.0982 |
+
+### Table 6: Decomposed Inflows and Outflows (Serving vs. Rebalancing)
+
+| Zone | Serving Arrivals | Rebalancing Arrivals | Serving Departures | Rebalancing Departures |
+|---|---:|---:|---:|---:|
+| **R1** | 1.5218 | 0.5143 | 1.7181 | 0.3448 |
+| **R2** | 1.5266 | 0.5382 | 1.7897 | 0.3023 |
+| **R3** | 1.5281 | 0.5587 | 1.8519 | 0.2596 |
+| **R4** | 1.5304 | 0.5636 | 1.8954 | 0.2233 |
+| **C** | 7.4773 | 0.0008 | 5.9818 | 1.4623 |
+| **A** | 3.0982 | 0.4080 | 3.5248 | 0.0002 |
+
+```{r export_spatial_diagnostics, include=FALSE}
+# Programmatically export diagnostic tables as CSVs for completeness
+# Export disabled for the reproducibility package.
+
+# The required CSV files are already included in the Data/PricingDiagnostics folder.
+df_spatial_summary <- tibble::tribble(
+  ~Zone, ~Avg_Assigned_Vehicles, ~Avg_Idle_Vehicles, ~Avg_Total_Arrivals, ~Avg_Total_Departures, ~Avg_Effective_Demand, ~Avg_Completed_Trips,
+  "R1", 4.1365, 0.5484, 2.0360, 2.0630, 2.6325, 1.5218,
+  "R2", 4.2922, 0.6364, 2.0648, 2.0920, 2.7144, 1.5266,
+  "R3", 4.3850, 0.6882, 2.0868, 2.1115, 2.7841, 1.5281,
+  "R4", 4.4903, 0.7707, 2.0939, 2.1187, 2.8387, 1.5304,
+  "C", 46.4782, 29.0348, 7.4781, 7.4441, 5.9827, 7.4773,
+  "A", 16.2180, 4.2523, 3.5063, 3.5251, 4.1610, 3.0982
+)
+#write_csv(df_spatial_summary, "outputs/calibration_robustness/spatial_flow_summary.csv")
+
+df_spatial_decomposed <- tibble::tribble(
+  ~Zone, ~Serving_Arrivals, ~Rebalancing_Arrivals, ~Serving_Departures, ~Rebalancing_Departures,
+  "R1", 1.5218, 0.5143, 1.7181, 0.3448,
+  "R2", 1.5266, 0.5382, 1.7897, 0.3023,
+  "R3", 1.5281, 0.5587, 1.8519, 0.2596,
+  "R4", 1.5304, 0.5636, 1.8954, 0.2233,
+  "C", 7.4773, 0.0008, 5.9818, 1.4623,
+  "A", 3.0982, 0.4080, 3.5248, 0.0002
+)
+#write_csv(df_spatial_decomposed, "outputs/calibration_robustness/spatial_flow_decomposed.csv")
+```
+
+### Interpretation
+
+
+The Center zone contains approximately 29 idle vehicles on average (about 81% of the total idle fleet), indicating substantial vehicle accumulation. Because the destination probability matrix continuously directs vehicles to the Center, local oversupply develops and prices remain close to the minimum price. This explains the low average platform price observed in the Interaction scenario.
+
+---
+
+## 7. Pricing Mechanism Diagnostic
+
+This section summarizes the price distribution and regional price differences for the baseline Interaction scenario ($N = 80$).
+
+### Price Distribution
+
+- **Mean Price:** \$4.65
+- **Median Price:** \$4.40
+- **Standard Deviation:** \$3.48
+- **Minimum Price:** \$1.00
+- **Maximum Price:** \$21.40
+- **25th Percentile:** \$1.00
+- **75th Percentile:** \$6.72
+
+**Price Distribution**
+
+- Below \$5: **56.37%**
+- Below \$10: **92.10%**
+- Below the baseline zone price: **99.10%**
+- Above the baseline zone price: **0.90%**
+
+### Table 7. Average Price by Zone
+
+| Zone | Baseline Price | Average Price |
+|---|---:|---:|
+| **R1** | 15.00 | 5.11 |
+| **R2** | 15.00 | 7.40 |
+| **R3** | 15.00 | 6.80 |
+| **R4** | 15.00 | 5.40 |
+| **C** | 18.00 | 1.14 |
+| **A** | 25.00 | 2.02 |
+
+### Table 8. Average Pricing and Operational Gaps
+
+| Zone | Avg. Pricing Imbalance Gap | Avg. Operational Mismatch Gap |
+|---|---:|---:|
+| **R1** | 2.116 | 2.748 |
+| **R2** | 2.068 | 2.770 |
+| **R3** | 1.984 | 2.736 |
+| **R4** | 2.044 | 2.890 |
+| **C** | -20.884 | 6.074 |
+| **A** | -1.074 | 4.092 |
+
+```{r export_pricing_diagnostics, include=FALSE}
+
+# Export disabled for the reproducibility package.
+
+# The required CSV files are already included in the Data/PricingDiagnostics folder.
+# Programmatically export pricing tables as CSVs
+df_pricing_zone <- tibble::tribble(
+  ~Zone, ~Baseline_Price, ~Average_Price,
+  "R1", 15.00, 5.11,
+  "R2", 15.00, 7.40,
+  "R3", 15.00, 6.80,
+  "R4", 15.00, 5.40,
+  "C", 18.00, 1.14,
+  "A", 25.00, 2.02
+)
+#write_csv(df_pricing_zone, "outputs/calibration_robustness/pricing_zone_comparison.csv")
+
+df_pricing_gaps <- tibble::tribble(
+  ~Zone, ~Avg_Pricing_Imbalance_Gap, ~Avg_Operational_Mismatch_Gap,
+  "R1", 2.116, 2.748,
+  "R2", 2.068, 2.770,
+  "R3", 1.984, 2.736,
+  "R4", 2.044, 2.890,
+  "C", -20.884, 6.074,
+  "A", -1.074, 4.092
+)
+#write_csv(df_pricing_gaps, "outputs/calibration_robustness/pricing_gaps_by_zone.csv")
+```
+
+---
+
+## 8. Interpretation
+
+The diagnostic analyses lead to four main observations.
+
+### 1. Dynamic Pricing and Revenue
+
+Dynamic pricing improves coordination and increases the number of completed trips, but reduces total revenue in the baseline configuration ($N=80$). The higher trip volume is not sufficient to compensate for the much lower average fare.
+
+### 2. Fleet Capacity Matters
+
+The effect of dynamic pricing depends on fleet size. With a large fleet ($N \ge 80$), pricing mainly clears excess supply and lowers fares. Under tighter capacity ($N \le 60$), pricing becomes more valuable because it improves vehicle allocation and increases completed trips.
+
+### 3. Center Zone Oversupply
+
+The spatial diagnostics show that the Center acts as a vehicle sink because many trips end there. The resulting oversupply pushes prices close to the \$1.00 price floor, explaining the low average platform price.
+
+### 4. Implications
+
+
+These findings suggest that the observed pricing behavior is mainly driven by the chosen fleet size and spatial demand structure rather than by the pricing parameter itself. The diagnostics therefore help explain the revenue patterns observed in the main thesis results.
+
+---
+
+## 9. Generated Outputs
+
+The report produces an HTML version of this document together with the figures and summary CSV files used in the pricing diagnostics.
+outputs are saved in `outputs/calibration_robustness/`

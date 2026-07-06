@@ -1,0 +1,359 @@
+---
+title: "Adaptive Governance Results"
+subtitle: "Stress Test and Robustness Analysis"
+author: "Mikus"
+date: "`r Sys.Date()`"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(knitr)
+library(gridExtra)
+
+# Set working directory to project root
+project_root <- "/Users/mikusdev/thesis-simulation"
+
+has_kableExtra <- requireNamespace("kableExtra", quietly = TRUE)
+if (has_kableExtra) {
+  library(kableExtra)
+}
+
+# Helper print formatted tables
+print_table <- function(df, caption) {
+  if (has_kableExtra) {
+    df %>%
+      kable(caption = caption, align = "r") %>%
+      kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+  } else {
+    kable(df, caption = caption, align = "r")
+  }
+}
+```
+
+# Adaptive Governance Extension – Statistical Results
+
+## Purpose
+
+This report documents the exploratory adaptive governance extension presented in Chapter 8.2 of the thesis. It summarizes the simulation results, reproduces the reported tables, and documents the experimental setup used to evaluate the adaptive governance mechanism under increasingly severe demand shocks.
+
+---
+
+## Experimental Setup
+
+The adaptive governance extension compares the baseline Interaction scenario with an event-triggered Adaptive Governance mechanism under repeated demand shocks.
+
+Simulation settings:
+
+- Fleet size: N = 80 vehicles
+- Backlog carry-over: 50%
+- Simulation horizon: 500 ticks
+- Monte Carlo replications: 50 random seeds
+- Shock intensities: 4×, 6× and 8× demand multipliers
+- Compared scenarios:
+  - Interaction
+  - Adaptive Governance
+
+---
+
+## Adaptive Governance Mechanism
+
+Adaptive governance is activated only during severe system stress.
+
+Activation requires:
+
+- spatial demand-supply imbalance > 0.14
+- overload present during at least three of the previous five ticks
+
+When active:
+
+- price adjustments are limited to δ = 2.0
+- rebalancing remains unconstrained (θ = 0, Rmax = 999)
+
+The objective is to stabilize prices while preserving matching performance.
+
+---
+
+## Data
+
+The tables below summarize the aggregated simulation results used in Chapter 8.2 of the thesis.
+
+The reported values correspond to:
+
+- 50 Monte Carlo replications
+- 500 simulation ticks
+- fleet size N = 80
+- 50% backlog carry-over
+
+```{r load_data}
+# Stress test results — aggregated means across 50 seeds
+stress_results <- tibble::tribble(
+  ~regime,              ~peak_multiplier, ~revenue_per_vehicle, ~service_rate, ~overload_frequency, ~avg_spatial_imbalance, ~max_spatial_imbalance, ~price_volatility, ~price_oscillation_index, ~activation_frequency,
+  "interaction",        4.0, 1232.1113925309419, 0.7304528787513452, 0.33524, 0.07374775,          0.13904166666666667, 2.950908334286979,  0.3313669222343921,  0.0,
+  "adaptive_governance",4.0, 1231.588508567167,  0.7304965191284348, 0.33536, 0.07375766666666667, 0.13904166666666667, 2.9484561849635917, 0.33112595837897046, 4e-05,
+  "interaction",        6.0, 2541.4177223958127, 0.6143501485357683, 0.48888, 0.08610125,          0.14883333333333332, 6.705741525237844,  0.23701935012778388, 0.0,
+  "adaptive_governance",6.0, 2519.998636686285,  0.6149662760142646, 0.48712, 0.0860295,           0.14825,             6.618060990299904,  0.23894706097115737, 0.00236,
+  "interaction",        8.0, 3943.939540627044,  0.5195265642543233, 0.56436, 0.09973725000000001, 0.18341666666666667, 10.9366145161902,   0.18443762930509922, 0.0,
+  "adaptive_governance",8.0, 3219.0020835417263, 0.506742938347789,  0.55224, 0.10068366666666666, 0.19012500000000002, 9.134486805944254,  0.22327929901423876, 0.06984
+)
+
+# OFAT robustness results — aggregated means across 50 seeds under 8.0x shock
+robustness_results <- tibble::tribble(
+  ~parameter_group, ~delta, ~theta, ~Rmax, ~service_rate,       ~overload_frequency, ~revenue_per_vehicle, ~price_volatility,   ~spatial_imbalance,         ~activation_frequency,
+  "delta",          1.0,    0,      999,   0.5041310440661363,  0.55492,             3121.656749422404,    8.938468102625347,   0.1010165,                  0.0752,
+  "delta",          2.0,    0,      999,   0.506742938347789,   0.55224,             3219.0020835417263,   9.134486805944254,   0.10068366666666666,        0.06984,
+  "delta",          3.0,    0,      999,   0.5073573181242841,  0.5580,              3260.8139025556393,   9.210886137111459,   0.10060408333333333,        0.06848,
+  "theta",          2.0,    0,      999,   0.506742938347789,   0.55224,             3219.0020835417263,   9.134486805944254,   0.10068366666666666,        0.06984,
+  "theta",          2.0,    1,      999,   0.5035011400909818,  0.55704,             3146.4615438226097,   8.988194624758217,   0.10118483333333333,        0.07708,
+  "theta",          2.0,    2,      999,   0.5049064610514518,  0.5592,              3161.1028037763167,   9.027075680817719,   0.10111675,                 0.07876,
+  "Rmax",           2.0,    0,      999,   0.506742938347789,   0.55224,             3219.0020835417263,   9.134486805944254,   0.10068366666666666,        0.06984,
+  "Rmax",           2.0,    0,      15,    0.505853914234924,   0.5556,              3213.318340017244,    9.146336767398225,   0.10084416666666668,        0.06972,
+  "Rmax",           2.0,    0,      10,    0.5056462812198029,  0.55192,             3196.252282747309,    9.09301600806078,    0.10086308333333333,        0.07224
+)
+
+# Clean labels for stress results
+stress_clean <- stress_results %>%
+  mutate(
+    regime_label = case_when(
+      regime == "interaction" ~ "Interaction",
+      regime == "adaptive_governance" ~ "Adaptive Governance",
+      TRUE ~ regime
+    )
+  )
+```
+
+---
+
+### Main Summary Table
+
+The table summarizes the results for the Interaction and Adaptive Governance scenarios across all three shock levels.
+
+```{r summary_table, echo=FALSE}
+summary_table_data <- stress_clean %>%
+  select(
+    `Shock Level` = peak_multiplier,
+    Scenario = regime_label,
+    `Service Rate` = service_rate,
+    `Overload Frequency` = overload_frequency,
+    `Revenue / Vehicle` = revenue_per_vehicle,
+    `Price Volatility` = price_volatility,
+    `Spatial Imbalance` = avg_spatial_imbalance,
+    `Max Spatial Imbalance` = max_spatial_imbalance,
+    `Adaptive Activation %` = activation_frequency
+  ) %>%
+  mutate(
+    `Service Rate` = sprintf("%.2f%%", `Service Rate` * 100),
+    `Overload Frequency` = sprintf("%.2f%%", `Overload Frequency` * 100),
+    `Revenue / Vehicle` = sprintf("$%.2f", `Revenue / Vehicle`),
+    `Price Volatility` = sprintf("%.3f", `Price Volatility`),
+    `Spatial Imbalance` = sprintf("%.3f", `Spatial Imbalance`),
+    `Max Spatial Imbalance` = sprintf("%.3f", `Max Spatial Imbalance`),
+    `Adaptive Activation %` = sprintf("%.2f%%", `Adaptive Activation %` * 100)
+  )
+
+print_table(summary_table_data, "Table 8.2a: Adaptive Governance Stress Test Results (N=80)")
+```
+
+---
+
+### Difference Table
+
+The following table summarizes the performance differences (Adaptive Governance − Interaction) across all shock levels.
+
+```{r difference_table, echo=FALSE}
+# Separate Interaction and Adaptive Governance
+df_int <- stress_clean %>% filter(regime == "interaction") %>% arrange(peak_multiplier)
+df_gov <- stress_clean %>% filter(regime == "adaptive_governance") %>% arrange(peak_multiplier)
+
+diff_data <- tibble(
+  `Shock Level` = df_int$peak_multiplier,
+  `Change in Service Rate` = df_gov$service_rate - df_int$service_rate,
+  `Change in Overload Freq.` = df_gov$overload_frequency - df_int$overload_frequency,
+  `Change in Revenue / Vehicle` = df_gov$revenue_per_vehicle - df_int$revenue_per_vehicle,
+  `Change in Price Volatility` = df_gov$price_volatility - df_int$price_volatility,
+  `Price Volatility Reduction %` = (df_int$price_volatility - df_gov$price_volatility) / df_int$price_volatility,
+  `Change in Spatial Imbalance` = df_gov$avg_spatial_imbalance - df_int$avg_spatial_imbalance,
+  `Activation Frequency` = df_gov$activation_frequency
+) %>%
+  mutate(
+    `Change in Service Rate` = sprintf("%+.2f%%", `Change in Service Rate` * 100),
+    `Change in Overload Freq.` = sprintf("%+.2f%%", `Change in Overload Freq.` * 100),
+    `Change in Revenue / Vehicle` = sprintf("$%+.2f", `Change in Revenue / Vehicle`),
+    `Change in Price Volatility` = sprintf("%+.3f", `Change in Price Volatility`),
+    `Price Volatility Reduction %` = sprintf("%.2f%%", `Price Volatility Reduction %` * 100),
+    `Change in Spatial Imbalance` = sprintf("%+.3f", `Change in Spatial Imbalance`),
+    `Activation Frequency` = sprintf("%.2f%%", `Activation Frequency` * 100)
+  )
+
+print_table(diff_data, "Table 8.2b: Metric Deltas (Adaptive Governance vs. Interaction)")
+```
+
+---
+
+
+
+### Parameter Robustness
+
+
+To evaluate whether the results depend on the selected parameter values, a one-factor-at-a-time (OFAT) robustness analysis was performed under the most demanding scenario (8.0× repeated demand shock). In each experiment, only one parameter was changed while all others remained at their baseline values.
+
+The baseline adaptive governance configuration uses $\delta = 2.0$, $\theta = 0$, and $R_{max} = 999$. This configuration is included in each parameter group for reference. The robustness analysis examines alternative values of the price damping parameter ($\delta$), the rebalancing threshold ($\theta$), and the maximum rebalancing rate ($R_{max}$), allowing the sensitivity of the reported performance metrics to be assessed.
+
+```{r robustness_table, echo=FALSE}
+robustness_clean <- robustness_results %>%
+  mutate(
+    `Parameter Config` = case_when(
+      parameter_group == "delta" ~ paste0("delta = ", delta, " (theta=0, Rmax=999)"),
+      parameter_group == "theta" ~ paste0("theta = ", theta, " (delta=2.0, Rmax=999)"),
+      parameter_group == "Rmax" ~ paste0("Rmax = ", Rmax, " (delta=2.0, theta=0)"),
+      TRUE ~ "Baseline"
+    )
+  ) %>%
+  select(
+    `Parameter Group` = parameter_group,
+    Configuration = `Parameter Config`,
+    `Service Rate` = service_rate,
+    `Overload Frequency` = overload_frequency,
+    `Revenue / Vehicle` = revenue_per_vehicle,
+    `Price Volatility` = price_volatility,
+    `Spatial Imbalance` = spatial_imbalance,
+    `Activation Frequency` = activation_frequency
+  ) %>%
+  mutate(
+    `Service Rate` = sprintf("%.2f%%", `Service Rate` * 100),
+    `Overload Frequency` = sprintf("%.2f%%", `Overload Frequency` * 100),
+    `Revenue / Vehicle` = sprintf("$%.2f", `Revenue / Vehicle`),
+    `Price Volatility` = sprintf("%.3f", `Price Volatility`),
+    `Spatial Imbalance` = sprintf("%.3f", `Spatial Imbalance`),
+    `Activation Frequency` = sprintf("%.2f%%", `Activation Frequency` * 100)
+  )
+
+print_table(robustness_clean, "Table 8.2c: One-Factor-At-A-Time Parameter Robustness under 8.0x Repeated Shock")
+```
+
+---
+
+### Visualizations
+
+Plot price volatility and adaptive activation frequency across the shock multipliers.
+
+```{r plotting, echo=FALSE, fig.width=10, fig.height=4}
+p1 <- ggplot(stress_clean, aes(x = peak_multiplier, y = price_volatility,
+                               color = regime_label, shape = regime_label)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(
+    "Interaction" = "#e06666",
+    "Adaptive Governance" = "#6fa8dc"
+  )) +
+  labs(
+    title = "Price Volatility vs. Shock Multiplier",
+    x = "Peak Shock Multiplier",
+    y = "Price Volatility",
+    color = "Scenario",
+    shape = "Scenario"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "bottom")
+
+p2 <- ggplot(
+  filter(stress_clean, regime == "adaptive_governance"),
+  aes(x = peak_multiplier, y = activation_frequency * 100)
+) +
+  geom_line(color = "#3d85c6", linewidth = 1) +
+  geom_point(color = "#3d85c6", size = 3) +
+  labs(
+    title = "Governance Activation % vs. Shock Multiplier",
+    x = "Peak Shock Multiplier",
+    y = "Activation % of Ticks"
+  ) +
+  theme_classic(base_size = 11)
+
+# Arrange side-by-side
+if (requireNamespace("gridExtra", quietly = TRUE)) {
+
+  grid_arrange_shared_legend <- function(..., ncol = 2, nrow = 1,
+                                         position = c("bottom", "right")) {
+    plots <- list(...)
+    position <- match.arg(position)
+
+    g <- ggplotGrob(plots[[1]] + theme(legend.position = position))$grobs
+    legend <- g[[which(sapply(g, function(x) x$name) == "guide-box")]]
+
+    legend_height <- sum(legend$height)
+    legend_width <- sum(legend$width)
+
+    plots_no_legend <- lapply(
+      plots,
+      function(x) x + theme(legend.position = "none")
+    )
+
+    arranged <- do.call(
+      gridExtra::arrangeGrob,
+      c(plots_no_legend, ncol = ncol, nrow = nrow)
+    )
+
+    if (position == "bottom") {
+      gridExtra::grid.arrange(
+        arranged,
+        legend,
+        ncol = 1,
+        heights = grid::unit.c(
+          grid::unit(1, "npc") - legend_height,
+          legend_height
+        )
+      )
+    } else {
+      gridExtra::grid.arrange(
+        arranged,
+        legend,
+        ncol = 2,
+        widths = grid::unit.c(
+          grid::unit(1, "npc") - legend_width,
+          legend_width
+        )
+      )
+    }
+  }
+
+  grid_arrange_shared_legend(p1, p2, ncol = 2)
+
+} else {
+  ggsave(
+    file.path(project_root, "outputs/final_exploratory_adaptive_governance/plot_price_volatility.png"),
+    p1,
+    width = 5,
+    height = 4,
+    dpi = 300
+  )
+
+  ggsave(
+    file.path(project_root, "outputs/final_exploratory_adaptive_governance/plot_activation_frequency.png"),
+    p2,
+    width = 5,
+    height = 4,
+    dpi = 300
+  )
+
+  print(p1)
+  print(p2)
+}
+```
+
+---
+## Interpretation and Conclusions
+
+The adaptive governance mechanism remains inactive under the 4.0× demand shock, indicating that the calibrated system can handle moderate stress without additional intervention.
+
+At the 6.0× shock level, the trigger activates only occasionally and slightly reduces price volatility.
+
+Under the 8.0× demand shock, adaptive governance becomes active more frequently and reduces price volatility while having only a small effect on the other performance metrics.
+
+The robustness analysis shows that these findings remain consistent across different parameter settings.
+
+Overall, adaptive governance acts as an emergency mechanism that activates only under severe system stress. As this extension was evaluated outside the main hypothesis-testing framework, the results should be considered exploratory.
