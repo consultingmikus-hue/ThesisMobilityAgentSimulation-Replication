@@ -22,6 +22,16 @@ The repository enables full reproduction of the reported simulation results and 
 
 ---
 
+## Submission Package
+
+For convenience, this repository includes a `submission_package/` directory containing the key files accompanying this thesis.
+
+- Results package (ZIP)
+- README and Supporting submission documents
+
+The replication repository itself contains the complete source code, experiment scripts, datasets, and analysis files required to reproduce the reported results.
+
+---
 # Repository Structure
 
 ```text
