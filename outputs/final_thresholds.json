@@ -1,0 +1,6 @@
+{
+  "imbalance_threshold": 0.15,
+  "percentile_rule": "Fixed thesis authoritative threshold (T = 0.15)",
+  "normalization": "spatial_imbalance divided by fleet_size",
+  "timestamp": "2026-06-06T14:16:28.000000+00:00"
+}

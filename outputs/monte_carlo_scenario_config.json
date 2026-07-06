@@ -1,0 +1,88 @@
+{
+  "run_length": 500,
+  "n_runs": 50,
+  "seed_range": "1 to 50",
+  "scenario_definitions": {
+    "passive": {
+      "pricing_enabled": false,
+      "rebalancing_enabled": false,
+      "forecasting_enabled": false,
+      "governance_enabled": false,
+      "shock_mode": "No Demand Shock"
+    },
+    "pricing_only": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": false,
+      "forecasting_enabled": true,
+      "governance_enabled": false,
+      "shock_mode": "No Demand Shock"
+    },
+    "rebalancing_only": {
+      "pricing_enabled": false,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": false,
+      "governance_enabled": false,
+      "shock_mode": "No Demand Shock"
+    },
+    "interaction": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": false,
+      "shock_mode": "No Demand Shock"
+    },
+    "governance": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": true,
+      "shock_mode": "No Demand Shock"
+    },
+    "interaction_demand_shock": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": false,
+      "shock_mode": "Demand Shock"
+    },
+    "governance_demand_shock": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": true,
+      "shock_mode": "Demand Shock"
+    },
+    "interaction_repeated_demand_shocks": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": false,
+      "shock_mode": "Repeated Demand Shocks"
+    },
+    "governance_repeated_demand_shocks": {
+      "pricing_enabled": true,
+      "rebalancing_enabled": true,
+      "forecasting_enabled": true,
+      "governance_enabled": true,
+      "shock_mode": "Repeated Demand Shocks"
+    }
+  },
+  "governance_grid": {
+    "deltas": [
+      1.0,
+      2.0,
+      4.0
+    ],
+    "thetas": [
+      1.0,
+      2.0,
+      4.0
+    ],
+    "R_maxs": [
+      10,
+      25,
+      40
+    ]
+  },
+  "imbalance_threshold": 0.15
+}

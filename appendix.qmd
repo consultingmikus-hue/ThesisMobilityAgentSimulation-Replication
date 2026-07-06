@@ -1,0 +1,114 @@
+# Appendix
+
+## Appendix – Final Model Parameters
+
+This appendix documents the structural parameters, spatial network, and demand configuration of the simulation model used for the baseline experiments.
+
+### A.1 Global Model Parameters
+
+| Parameter | Symbol | Value | Description |
+|---|---|:---:|---|
+| Fleet Size | $N$ | 80 | Total active vehicles in the system |
+| Carry-over Rate | $\beta$ | 0.50 (50%) | Percentage of backlog carried over to the next tick |
+| Pricing Alpha | $\alpha$ | 0.30 | Dynamic pricing sensitivity parameter |
+| Forecasting Alpha | $\alpha_f$ | 0.10 | Demand forecasting learning rate |
+| Governance Delta | $\delta$ | 1.00 | Price adjustment damping limit |
+| Governance Theta | $\theta$ | 1.00 | Spatial imbalance rebalancing threshold |
+| Governance Rmax | $R_{max}$ | 10 | Maximum rebalancing dispatches per step |
+| Simulation Length | $T$ | 500 ticks | Number of steps per simulation run |
+| Monte Carlo Seeds | $S$ | 50 | Total number of random seed replications |
+
+### A.2 Spatial and Demand Configuration
+
+#### Base Demand Rates ($\lambda_z$)
+The arrival rate of passenger demand requests in zone $z$ is modeled using a Poisson process with intensity $\lambda_z$ (requests per tick):
+
+| Zone Class | Zone Code | Base Demand Rate ($\lambda_z$) | Baseline Price |
+|---|---|:---:|:---:|
+| Residential 1 | R1 | 3.0 | \$15.00 |
+| Residential 2 | R2 | 3.0 | \$15.00 |
+| Residential 3 | R3 | 3.0 | \$15.00 |
+| Residential 4 | R4 | 3.0 | \$15.00 |
+| Center | C | 6.0 | \$18.00 |
+| Airport | A | 4.0 | \$25.00 |
+
+#### Travel-Time Matrix (ticks)
+Fixed travel times in ticks between origins (rows) and destinations (columns):
+
+| Origin / Destination | R1 | R2 | R3 | R4 | C | A |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **R1** | 1 | 1 | 1 | 1 | 2 | 3 |
+| **R2** | 1 | 1 | 1 | 1 | 2 | 3 |
+| **R3** | 1 | 1 | 1 | 1 | 2 | 3 |
+| **R4** | 1 | 1 | 1 | 1 | 2 | 3 |
+| **C**  | 2 | 2 | 2 | 2 | 1 | 4 |
+| **A**  | 3 | 3 | 3 | 3 | 4 | 1 |
+
+#### Destination Probability Matrix
+The probability distribution of destination selection for trips originating from each zone:
+
+| Origin / Destination | R1 | R2 | R3 | R4 | C | A |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **R1** | 0.075 | 0.075 | 0.075 | 0.075 | 0.50 | 0.20 |
+| **R2** | 0.075 | 0.075 | 0.075 | 0.075 | 0.50 | 0.20 |
+| **R3** | 0.075 | 0.075 | 0.075 | 0.075 | 0.50 | 0.20 |
+| **R4** | 0.075 | 0.075 | 0.075 | 0.075 | 0.50 | 0.20 |
+| **C**  | 0.1125 | 0.1125 | 0.1125 | 0.1125 | 0.30 | 0.25 |
+| **A**  | 0.0875 | 0.0875 | 0.0875 | 0.0875 | 0.60 | 0.05 |
+
+---
+
+## Appendix B – Governance Configuration Selection
+
+A grid search sweep was conducted across 27 parameter configurations ($\delta \in \{1.0, 2.0, 4.0\}$, $\theta \in \{1.0, 2.0, 4.0\}$, and $R_{max} \in \{10, 25, 40\}$) to select the final static governance parameters. The selected configuration and the strongest competing candidates are shown below:
+
+| Delta ($\delta$) | Theta ($\theta$) | Rmax ($R_{max}$) | Service Rate | Price Volatility | Selected |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| **1.0** | **1.0** | **10** | **75.65%** | **1.786** | **Yes (Selected)** |
+| 1.0 | 2.0 | 10 | 73.15% | 1.948 | No |
+| 1.0 | 4.0 | 10 | 71.67% | 2.054 | No |
+| 2.0 | 1.0 | 10 | 75.51% | 1.981 | No |
+| 2.0 | 2.0 | 10 | 72.60% | 2.264 | No |
+| 4.0 | 1.0 | 10 | 75.58% | 2.069 | No |
+| 4.0 | 2.0 | 10 | 72.48% | 2.320 | No |
+
+---
+
+## Appendix C – Additional Calibration Diagnostics
+
+This appendix documents supporting sensitivity analyses performed on the simulation model under varying structural settings.
+
+### C.1 Fleet Size Robustness
+
+Calibration sweep for the unconstrained Interaction scenario across different fleet sizes $N$ (50 seeds, 500 ticks each, 50% backlog carryover):
+
+| Fleet Size ($N$) | Service Rate | Revenue per Vehicle | Total Revenue | Idle Share |
+|:---:|:---:|:---:|:---:|:---:|
+| 40 | 70.55% | \$1236.68 | \$49467.33 | 11.64% |
+| 50 | 76.31% | \$746.55 | \$37327.69 | 17.06% |
+| 60 | 78.93% | \$528.64 | \$31718.30 | 26.93% |
+| 80 (Baseline) | 79.38% | \$385.09 | \$30806.95 | 44.91% |
+| 100 | 79.49% | \$301.55 | \$30155.21 | 55.76% |
+
+### C.2 Pricing Sensitivity Robustness (N = 60)
+
+Calibration sweep for the pricing sensitivity parameter $\alpha$ under the unconstrained Interaction scenario, evaluated at a reference fleet size of $N = 60$ vehicles (50 seeds, 500 ticks each, 50% backlog carryover):
+
+| Alpha ($\alpha$) | Service Rate | Revenue per Vehicle | Average Price | Price Volatility |
+|:---:|:---:|:---:|:---:|:---:|
+| 0.1 | 77.86% | \$480.64 | \$4.76 | 1.391 |
+| 0.2 | 78.62% | \$500.30 | \$5.06 | 1.288 |
+| 0.3 (Reference Value) | 78.93% | \$528.64 | \$5.46 | 1.433 |
+| 0.4 | 79.10% | \$554.93 | \$5.88 | 1.585 |
+
+### C.3 Revenue Decomposition
+
+Detailed financial decomposition across the main scenarios evaluated in the thesis (baseline configuration $N=80$, 50 seeds, 500 ticks each):
+
+| Scenario | Completed Trips | Average Price | Revenue per Vehicle | Total Revenue |
+|---|:---:|:---:|:---:|:---:|
+| Passive | 4490.8 | \$17.17 | \$1018.60 | \$81487.68 |
+| Pricing Only | 6987.3 | \$9.30 | \$477.44 | \$38195.51 |
+| Rebalancing Only | 5080.5 | \$17.17 | \$1131.62 | \$90529.92 |
+| Interaction | 8380.9 | \$5.27 | \$385.09 | \$30806.95 |
+| Governance | 7509.3 | \$8.06 | \$492.64 | \$39411.36 |

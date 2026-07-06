@@ -1,0 +1,2759 @@
+---
+title: "Governing Interacting Autonomous Algorithmic Decision Mechanisms in Digital Platforms"
+subtitle: "Supplementary Statistical Analysis"
+author: "Mikus"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    echo: true
+    warning: false
+    message: false
+    fig.width: 8
+    fig.height: 5
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(broom)
+
+# Verify dataset path
+csv_path <- "outputs/monte_carlo_run_summary.csv"
+if (!file.exists(csv_path)) {
+  csv_path <- "monte_carlo_run_summary.csv"
+}
+if (!file.exists(csv_path)) {
+  stop("Input file 'outputs/monte_carlo_run_summary.csv' not found. Please ensure simulation has been run and outputs exist.")
+}
+
+df_full <- read_csv(csv_path)
+
+# Verify required columns exist
+# Rename low_idle_frequency to low_idle_capacity_frequency to match updated naming
+if ("low_idle_frequency" %in% colnames(df_full)) {
+  df_full <- df_full %>% rename(low_idle_capacity_frequency = low_idle_frequency)
+}
+
+expected_cols <- c(
+  "scenario", "seed",
+  "revenue_per_vehicle", "fleet_utilization", "service_rate", 
+  "demand_supply_mismatch", "vehicle_concentration",
+  "price_volatility", "oscillation_index", "overload_frequency", 
+  "persistence_demand_supply_mismatch", "low_idle_capacity_frequency",
+  "peak_unmet_demand"
+)
+
+missing_cols <- setdiff(expected_cols, colnames(df_full))
+if (length(missing_cols) > 0) {
+  warning(paste("The following required columns are missing from the dataset:", paste(missing_cols, collapse = ", ")))
+}
+
+# Scenario color palette
+scenario_colors <- c(
+  "passive" = "#1F4E79",
+  "pricing_only" = "#D95F8D",
+  "rebalancing_only" = "#56B4E9",
+  "interaction" = "#8E44AD",
+  "governance" = "#4C956C",
+  "interaction_demand_shock" = "#8E44AD",
+  "governance_demand_shock" = "#4C956C",
+  "interaction_repeated_demand_shocks" = "#8E44AD",
+  "governance_repeated_demand_shocks" = "#4C956C"
+)
+```
+
+------------------------------------------------------------------------
+
+## Helper Functions
+
+First, we define reusable helper functions for descriptive statistics, ANOVA, effect size estimation, Tukey HSD post-hoc tests, and publication-style visualizations.
+
+```{r helpers}
+# Custom function to calculate 95% CI without Hmisc dependency
+mean_ci_95 <- function(x) {
+  x <- na.omit(x)
+  n <- length(x)
+  if (n < 2) return(data.frame(y = mean(x), ymin = mean(x), ymax = mean(x)))
+  m <- mean(x)
+  se <- sd(x) / sqrt(n)
+  ci <- 1.96 * se
+  data.frame(y = m, ymin = m - ci, ymax = m + ci)
+}
+
+# Helper for Descriptive Statistics table
+create_summary_table <- function(df, metric, group_col = "scenario") {
+  group_col <- resolve_group_col(df, group_col)
+
+  df %>%
+    filter(!is.na(!!sym(metric)), !is.na(!!sym(group_col))) %>%
+    group_by(!!sym(group_col)) %>%
+    summarise(
+      Mean = mean(!!sym(metric), na.rm = TRUE),
+      SD = sd(!!sym(metric), na.rm = TRUE),
+      N = sum(!is.na(!!sym(metric))),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      SE = if_else(N > 0, SD / sqrt(N), NA_real_),
+      CI_Lower = Mean - 1.96 * SE,
+      CI_Upper = Mean + 1.96 * SE
+    ) %>%
+    select(Group = !!sym(group_col), Mean, SD, `95% CI Lower` = CI_Lower, `95% CI Upper` = CI_Upper, N) %>%
+    mutate(across(where(is.numeric), ~ round(., 3)))
+}
+
+# Small helper: use the requested grouping column if it exists; otherwise fall back to scenario.
+# This avoids errors when a function is called with governance_mode although the current dataset only has scenario.
+resolve_group_col <- function(df, group_col = "scenario") {
+  if (group_col %in% colnames(df)) {
+    return(group_col)
+  }
+  if ("scenario" %in% colnames(df)) {
+    warning(paste0("Grouping column '", group_col, "' not found. Falling back to 'scenario'."))
+    return("scenario")
+  }
+  stop(paste0("Neither grouping column '", group_col, "' nor fallback column 'scenario' exist in the dataset."))
+}
+
+format_p_value <- function(p_val) {
+  if (length(p_val) == 0 || is.na(p_val) || !is.finite(p_val)) {
+    return("not computable")
+  }
+  if (p_val < 0.001) {
+    "< 0.001"
+  } else {
+    as.character(round(p_val, 3))
+  }
+}
+
+interpret_eta <- function(eta_sq) {
+  if (length(eta_sq) == 0 || is.na(eta_sq) || !is.finite(eta_sq)) {
+    "not computable"
+  } else if (eta_sq < 0.01) {
+    "Negligible"
+  } else if (eta_sq < 0.06) {
+    "Small"
+  } else if (eta_sq < 0.14) {
+    "Medium"
+  } else {
+    "Large"
+  }
+}
+
+prepare_metric_df <- function(df, metric, group_col = "scenario") {
+  group_col <- resolve_group_col(df, group_col)
+
+  if (!(metric %in% colnames(df))) {
+    stop(paste0("Metric '", metric, "' not found in dataset."))
+  }
+
+  out <- df %>%
+    filter(!is.na(!!sym(metric)), !is.na(!!sym(group_col))) %>%
+    mutate(!!group_col := factor(!!sym(group_col)))
+
+  n_groups <- n_distinct(out[[group_col]])
+  if (nrow(out) == 0 || n_groups < 2) {
+    warning(paste0("Metric '", metric, "' does not have at least two non-empty groups."))
+  }
+
+  list(data = out, group_col = group_col, n_groups = n_groups)
+}
+
+# Helper for One-Way ANOVA table
+create_anova_table <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  if (prep$n_groups < 2 || sd(d[[metric]], na.rm = TRUE) == 0) {
+    return(tibble(
+      Source = c(paste0("Treatment (", group_col, ")"), "Residuals"),
+      Df = NA_real_,
+      `Sum Sq` = NA_real_,
+      `Mean Sq` = NA_real_,
+      `F Statistic` = NA_real_,
+      `p-value` = "not computable"
+    ))
+  }
+
+  formula_str <- paste(metric, "~", group_col)
+  fit <- tryCatch(aov(as.formula(formula_str), data = d), error = function(e) NULL)
+
+  if (is.null(fit)) {
+    return(tibble(
+      Source = c(paste0("Treatment (", group_col, ")"), "Residuals"),
+      Df = NA_real_,
+      `Sum Sq` = NA_real_,
+      `Mean Sq` = NA_real_,
+      `F Statistic` = NA_real_,
+      `p-value` = "not computable"
+    ))
+  }
+
+  anova_summary <- summary(fit)[[1]]
+  p_val <- anova_summary$`Pr(>F)`[1]
+
+  tibble(
+    Source = c(paste0("Treatment (", group_col, ")"), "Residuals"),
+    Df = anova_summary$Df,
+    `Sum Sq` = round(anova_summary$`Sum Sq`, 3),
+    `Mean Sq` = round(anova_summary$`Mean Sq`, 3),
+    `F Statistic` = round(anova_summary$`F value`, 3),
+    `p-value` = c(format_p_value(p_val), "")
+  )
+}
+
+# Helper to run Tukey HSD and format it nicely
+create_tukey_table <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  if (prep$n_groups < 2 || sd(d[[metric]], na.rm = TRUE) == 0) {
+    return(tibble(
+      Comparison = "not computable",
+      `Mean Difference` = NA_real_,
+      `95% CI Lower` = NA_real_,
+      `95% CI Upper` = NA_real_,
+      `Adjusted p-value` = "not computable"
+    ))
+  }
+
+  fit <- tryCatch(aov(as.formula(paste(metric, "~", group_col)), data = d), error = function(e) NULL)
+  tuk <- tryCatch(TukeyHSD(fit), error = function(e) NULL)
+
+  if (is.null(fit) || is.null(tuk) || is.null(tuk[[group_col]])) {
+    return(tibble(
+      Comparison = "not computable",
+      `Mean Difference` = NA_real_,
+      `95% CI Lower` = NA_real_,
+      `95% CI Upper` = NA_real_,
+      `Adjusted p-value` = "not computable"
+    ))
+  }
+
+  as.data.frame(tuk[[group_col]]) %>%
+    rownames_to_column("Comparison") %>%
+    mutate(
+      diff = round(diff, 3),
+      lwr = round(lwr, 3),
+      upr = round(upr, 3),
+      p_adj = ifelse(is.na(`p adj`), "not computable", ifelse(`p adj` < 0.001, "< 0.001", as.character(round(`p adj`, 3))))
+    ) %>%
+    select(Comparison, diff, lwr, upr, p_adj) %>%
+    rename(
+      `Mean Difference` = diff,
+      `95% CI Lower` = lwr,
+      `95% CI Upper` = upr,
+      `Adjusted p-value` = p_adj
+    )
+}
+
+# Helper for Eta Squared
+create_eta_squared <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  eta_sq <- NA_real_
+
+  if (prep$n_groups >= 2 && nrow(d) > 0 && sd(d[[metric]], na.rm = TRUE) > 0) {
+    fit <- tryCatch(aov(as.formula(paste(metric, "~", group_col)), data = d), error = function(e) NULL)
+    if (!is.null(fit)) {
+      anova_summary <- summary(fit)[[1]]
+      ss_effect <- anova_summary$`Sum Sq`[1]
+      ss_residual <- anova_summary$`Sum Sq`[2]
+      ss_total <- ss_effect + ss_residual
+      if (!is.na(ss_total) && is.finite(ss_total) && ss_total > 0) {
+        eta_sq <- ss_effect / ss_total
+      }
+    }
+  }
+
+  tibble(
+    Metric = metric,
+    `Group Variable` = group_col,
+    `Eta²` = ifelse(is.na(eta_sq) | !is.finite(eta_sq), NA_real_, round(eta_sq, 3)),
+    Interpretation = interpret_eta(eta_sq)
+  )
+}
+
+
+# Helper to create boxplot
+create_boxplot <- function(df, metric, ylabel, group_col = "scenario") {
+  ggplot(df, aes(x = !!sym(group_col), y = !!sym(metric), fill = !!sym(group_col))) +
+    geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.4, color = "black", linewidth = 0.6) +
+    geom_jitter(width = 0.15, height = 0, alpha = 0.4, size = 1.2, aes(color = !!sym(group_col))) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "black") +
+    stat_summary(fun.data = mean_ci_95, geom = "errorbar", width = 0.12, color = "black", linewidth = 0.8) +
+    scale_fill_manual(values = scenario_colors) +
+    scale_color_manual(values = scenario_colors) +
+    theme_minimal() +
+    labs(x = "Scenario", y = ylabel) +
+    theme(
+      legend.position = "none",
+      plot.title = element_blank(),
+      axis.title = element_text(face = "bold", size = 11),
+      axis.text = element_text(size = 10, color = "black"),
+      panel.grid.major = element_line(color = "grey93", linewidth = 0.5),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# Helper to extract summary for final table
+extract_anova_summary <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  f_stat <- NA_real_
+  p_val <- NA_real_
+  eta_sq <- NA_real_
+
+  if (prep$n_groups >= 2 && nrow(d) > 0 && sd(d[[metric]], na.rm = TRUE) > 0) {
+    fit <- tryCatch(aov(as.formula(paste(metric, "~", group_col)), data = d), error = function(e) NULL)
+    if (!is.null(fit)) {
+      sum_fit <- summary(fit)[[1]]
+      f_stat <- sum_fit$`F value`[1]
+      p_val <- sum_fit$`Pr(>F)`[1]
+      ss_effect <- sum_fit$`Sum Sq`[1]
+      ss_residual <- sum_fit$`Sum Sq`[2]
+      ss_total <- ss_effect + ss_residual
+      if (!is.na(ss_total) && is.finite(ss_total) && ss_total > 0) {
+        eta_sq <- ss_effect / ss_total
+      }
+    }
+  }
+
+  tibble(
+    Metric = metric,
+    `F Statistic` = ifelse(is.na(f_stat) | !is.finite(f_stat), NA_real_, round(f_stat, 3)),
+    `p-value` = format_p_value(p_val),
+    `Eta²` = ifelse(is.na(eta_sq) | !is.finite(eta_sq), NA_real_, round(eta_sq, 3)),
+    `Effect Size Interpretation` = interpret_eta(eta_sq)
+  )
+}
+
+# Helper to run two-sample t-test and format result
+create_ttest_table <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  groups <- levels(d[[group_col]])
+  if (length(groups) < 2) {
+    groups <- unique(as.character(d[[group_col]]))
+  }
+
+  if (length(groups) < 2) {
+    return(tibble(
+      Comparison = "not computable",
+      `Mean (Group 1)` = NA_real_,
+      `Mean (Group 2)` = NA_real_,
+      Difference = NA_real_,
+      `Percentage Change` = "N/A",
+      `t-Statistic` = NA_real_,
+      Df = NA_real_,
+      `p-value` = "not computable"
+    ))
+  }
+
+  g1 <- groups[1]
+  g2 <- groups[2]
+  x1 <- d[[metric]][d[[group_col]] == g1]
+  x2 <- d[[metric]][d[[group_col]] == g2]
+
+  m1 <- mean(x1, na.rm = TRUE)
+  m2 <- mean(x2, na.rm = TRUE)
+  diff_mean <- m2 - m1
+  pct_change <- if (is.finite(m1) && abs(m1) > 1e-9) (diff_mean / m1) * 100 else NA_real_
+
+  t_fit <- tryCatch(
+    t.test(as.formula(paste(metric, "~", group_col)), data = d, var.equal = TRUE),
+    error = function(e) NULL
+  )
+
+  t_stat <- if (!is.null(t_fit)) unname(t_fit$statistic) else NA_real_
+  df_val <- if (!is.null(t_fit)) unname(t_fit$parameter) else NA_real_
+  p_val <- if (!is.null(t_fit)) t_fit$p.value else NA_real_
+
+  tibble(
+    Comparison = paste(g2, "vs", g1),
+    `Mean (Group 1)` = round(m1, 3),
+    `Mean (Group 2)` = round(m2, 3),
+    Difference = round(diff_mean, 3),
+    `Percentage Change` = if (is.na(pct_change)) "N/A" else paste0(round(pct_change, 1), "%"),
+    `t-Statistic` = ifelse(is.na(t_stat) | !is.finite(t_stat), NA_real_, round(t_stat, 3)),
+    Df = ifelse(is.na(df_val) | !is.finite(df_val), NA_real_, round(df_val, 3)),
+    `p-value` = format_p_value(p_val)
+  )
+}
+
+safe_ttest_stats <- function(df, metric, group_col = "scenario") {
+  prep <- prepare_metric_df(df, metric, group_col)
+  d <- prep$data
+  group_col <- prep$group_col
+
+  t_fit <- tryCatch(
+    t.test(as.formula(paste(metric, "~", group_col)), data = d, var.equal = TRUE),
+    error = function(e) NULL
+  )
+
+  if (is.null(t_fit)) {
+    return(list(t_stat = NA_real_, df = NA_real_, p_val = NA_real_, eta_sq = NA_real_))
+  }
+
+  t_stat <- unname(t_fit$statistic)
+  df_val <- unname(t_fit$parameter)
+  p_val <- t_fit$p.value
+  eta_sq <- if (!is.na(t_stat) && !is.na(df_val) && is.finite(t_stat) && is.finite(df_val)) {
+    (t_stat^2) / (t_stat^2 + df_val)
+  } else {
+    NA_real_
+  }
+
+  list(t_stat = t_stat, df = df_val, p_val = p_val, eta_sq = eta_sq)
+}
+# Summary Table 1 Helper (H1 Summary Table - Individual Mechanisms)
+build_h1_summary_table <- function(df_h1) {
+  metrics <- c("revenue_per_vehicle", "fleet_utilization", "service_rate", "demand_supply_mismatch", "vehicle_concentration")
+  rows <- list()
+  for (m in metrics) {
+    if (!(m %in% colnames(df_h1))) next
+    
+    # Calculate means
+    m_passive <- mean(df_h1[[m]][df_h1$scenario == "passive"], na.rm = TRUE)
+    m_pricing <- mean(df_h1[[m]][df_h1$scenario == "pricing_only"], na.rm = TRUE)
+    m_rebalancing <- mean(df_h1[[m]][df_h1$scenario == "rebalancing_only"], na.rm = TRUE)
+    
+    # Calculate ANOVA
+    res <- extract_anova_summary(df_h1, m, group_col = "scenario")
+    
+    rows[[m]] <- tibble(
+      Metric = m,
+      `Passive Mean` = round(m_passive, 3),
+      `Pricing Only Mean` = round(m_pricing, 3),
+      `Rebalancing Only Mean` = round(m_rebalancing, 3),
+      `ANOVA F Statistic` = ifelse(is.na(res$`F Statistic`), "not computable", paste("F =", res$`F Statistic`)),
+      `p-value` = res$`p-value`,
+      `Eta²` = ifelse(is.na(res$`Eta²`), NA_real_, round(res$`Eta²`, 3)),
+      `Effect Size Interpretation` = res$`Effect Size Interpretation`
+    )
+  }
+  bind_rows(rows)
+}
+
+# Summary Table 2 Helper 
+build_h2_summary_table <- function(df_h2) {
+  metrics <- c("price_volatility", "oscillation_index", "overload_frequency", "persistence_demand_supply_mismatch", "demand_supply_mismatch", "vehicle_concentration", "revenue_per_vehicle")
+  rows <- list()
+  for (m in metrics) {
+    if (!(m %in% colnames(df_h2))) next
+    
+    # Calculate means
+    m_pricing <- mean(df_h2[[m]][df_h2$scenario == "pricing_only"], na.rm = TRUE)
+    m_rebalancing <- mean(df_h2[[m]][df_h2$scenario == "rebalancing_only"], na.rm = TRUE)
+    m_interaction <- mean(df_h2[[m]][df_h2$scenario == "interaction"], na.rm = TRUE)
+    
+    # Calculate ANOVA
+    res <- extract_anova_summary(df_h2, m, group_col = "scenario")
+    
+    rows[[m]] <- tibble(
+      Metric = m,
+      `Pricing Only Mean` = round(m_pricing, 3),
+      `Rebalancing Only Mean` = round(m_rebalancing, 3),
+      `Interaction Mean` = round(m_interaction, 3),
+      `ANOVA F Statistic` = ifelse(is.na(res$`F Statistic`), "not computable", paste("F =", res$`F Statistic`)),
+      `p-value` = res$`p-value`,
+      `Eta²` = ifelse(is.na(res$`Eta²`), NA_real_, round(res$`Eta²`, 3)),
+      `Effect Size Interpretation` = res$`Effect Size Interpretation`
+    )
+  }
+  bind_rows(rows)
+}
+
+# Summary Table 3 Helper (H3 Summary Table - Governance Effects)
+build_h3_summary_table <- function(df_h3) {
+  metrics <- c("revenue_per_vehicle", "fleet_utilization", "service_rate", "price_volatility", "oscillation_index", "overload_frequency", "demand_supply_mismatch", "persistence_demand_supply_mismatch", "vehicle_concentration", "low_idle_capacity_frequency")
+  rows <- list()
+  for (m in metrics) {
+    if (!(m %in% colnames(df_h3))) next
+    
+    # Calculate means
+    m_interaction <- mean(df_h3[[m]][df_h3$scenario == "interaction"], na.rm = TRUE)
+    m_governance <- mean(df_h3[[m]][df_h3$scenario == "governance"], na.rm = TRUE)
+    diff_val <- m_governance - m_interaction
+    
+    # Calculate t-test
+    res <- safe_ttest_stats(df_h3, m, group_col = "scenario")
+    
+    rows[[m]] <- tibble(
+      Metric = m,
+      `Interaction Mean` = round(m_interaction, 3),
+      `Governance Mean` = round(m_governance, 3),
+      `Difference in Means` = round(diff_val, 3),
+      `t Statistic` = ifelse(is.na(res$t_stat) || !is.finite(res$t_stat), "not computable", paste("t =", round(res$t_stat, 3))),
+      `p-value` = format_p_value(res$p_val),
+      `Eta²` = ifelse(is.na(res$eta_sq) || !is.finite(res$eta_sq), NA_real_, round(res$eta_sq, 3)),
+      `Effect Size Interpretation` = interpret_eta(res$eta_sq)
+    )
+  }
+  bind_rows(rows)
+}
+
+# Summary Table 4a Helper (H4 Single Shock Summary Table)
+build_h4_single_summary_table <- function(df_h4_single) {
+  metrics <- c("service_rate", "overload_frequency", "peak_unmet_demand", "price_volatility", "oscillation_index", "demand_supply_mismatch", "persistence_demand_supply_mismatch", "vehicle_concentration", "revenue_per_vehicle", "low_idle_capacity_frequency")
+  rows <- list()
+  for (m in metrics) {
+    if (!(m %in% colnames(df_h4_single))) next
+    
+    # Calculate means
+    m_interaction <- mean(df_h4_single[[m]][df_h4_single$scenario == "interaction_demand_shock"], na.rm = TRUE)
+    m_governance <- mean(df_h4_single[[m]][df_h4_single$scenario == "governance_demand_shock"], na.rm = TRUE)
+    diff_val <- m_governance - m_interaction
+    
+    # t-test
+    res <- safe_ttest_stats(df_h4_single, m, group_col = "scenario")
+    
+    rows[[m]] <- tibble(
+      Metric = m,
+      `Interaction Mean` = round(m_interaction, 3),
+      `Governance Mean` = round(m_governance, 3),
+      `Difference in Means` = round(diff_val, 3),
+      `t Statistic` = ifelse(is.na(res$t_stat) || !is.finite(res$t_stat), "not computable", paste("t =", round(res$t_stat, 3))),
+      `p-value` = format_p_value(res$p_val),
+      `Eta²` = ifelse(is.na(res$eta_sq) || !is.finite(res$eta_sq), NA_real_, round(res$eta_sq, 3)),
+      `Effect Size Interpretation` = interpret_eta(res$eta_sq)
+    )
+  }
+  bind_rows(rows)
+}
+
+# Summary Table 4b Helper (H4 Repeated Shocks Summary Table)
+build_h4_repeated_summary_table <- function(df_h4_repeated) {
+  metrics <- c("service_rate", "overload_frequency", "peak_unmet_demand", "price_volatility", "oscillation_index", "demand_supply_mismatch", "persistence_demand_supply_mismatch", "vehicle_concentration", "revenue_per_vehicle", "low_idle_capacity_frequency")
+  rows <- list()
+  for (m in metrics) {
+    if (!(m %in% colnames(df_h4_repeated))) next
+    
+    # Calculate means
+    m_interaction <- mean(df_h4_repeated[[m]][df_h4_repeated$scenario == "interaction_repeated_demand_shocks"], na.rm = TRUE)
+    m_governance <- mean(df_h4_repeated[[m]][df_h4_repeated$scenario == "governance_repeated_demand_shocks"], na.rm = TRUE)
+    diff_val <- m_governance - m_interaction
+    
+    # t-test
+    res <- safe_ttest_stats(df_h4_repeated, m, group_col = "scenario")
+    
+    rows[[m]] <- tibble(
+      Metric = m,
+      `Interaction Mean` = round(m_interaction, 3),
+      `Governance Mean` = round(m_governance, 3),
+      `Difference in Means` = round(diff_val, 3),
+      `t Statistic` = ifelse(is.na(res$t_stat) || !is.finite(res$t_stat), "not computable", paste("t =", round(res$t_stat, 3))),
+      `p-value` = format_p_value(res$p_val),
+      `Eta²` = ifelse(is.na(res$eta_sq) || !is.finite(res$eta_sq), NA_real_, round(res$eta_sq, 3)),
+      `Effect Size Interpretation` = interpret_eta(res$eta_sq)
+    )
+  }
+  bind_rows(rows)
+}
+
+print_kable <- function(x, caption) {
+  if (requireNamespace("kableExtra", quietly = TRUE)) {
+    kableExtra::kbl(x, caption = caption) %>%
+      kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+  } else {
+    kable(x, caption = caption)
+  }
+}
+```
+
+# 6.1 H1 – Individual Mechanisms
+
+This section evaluates the individual effects of dynamic pricing and spatial rebalancing on performance metrics by comparing the base scenarios: **passive** (baseline), **pricing_only** (demand side only), and **rebalancing_only** (supply side only).
+
+```{r h1_data}
+h1_scenarios <- c("passive", "pricing_only", "rebalancing_only")
+df_h1 <- df_full %>% 
+  filter(scenario %in% h1_scenarios) %>%
+  mutate(scenario = factor(scenario, levels = h1_scenarios))
+```
+
+## Revenue per Vehicle
+
+### Descriptive Statistics
+
+```{r h1_rev_desc}
+run_h1_rev <- "revenue_per_vehicle" %in% colnames(df_h1)
+if (run_h1_rev) {
+  create_summary_table(df_h1, "revenue_per_vehicle") %>% kable()
+} else {
+  warning("Metric 'revenue_per_vehicle' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h1_rev_anova}
+if (run_h1_rev) {
+  create_anova_table(df_h1, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h1_rev_eta}
+if (run_h1_rev) {
+  create_eta_squared(df_h1, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h1_rev_tukey}
+if (run_h1_rev) {
+  create_tukey_table(df_h1, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h1_rev_plot}
+if (run_h1_rev) {
+  create_boxplot(df_h1, "revenue_per_vehicle", "Revenue per Vehicle ($)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Fleet Utilization
+
+### Descriptive Statistics
+
+```{r h1_util_desc}
+run_h1_util <- "fleet_utilization" %in% colnames(df_h1)
+if (run_h1_util) {
+  create_summary_table(df_h1, "fleet_utilization") %>% kable()
+} else {
+  warning("Metric 'fleet_utilization' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h1_util_anova}
+if (run_h1_util) {
+  create_anova_table(df_h1, "fleet_utilization") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h1_util_eta}
+if (run_h1_util) {
+  create_eta_squared(df_h1, "fleet_utilization") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h1_util_tukey}
+if (run_h1_util) {
+  create_tukey_table(df_h1, "fleet_utilization") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h1_util_plot}
+if (run_h1_util) {
+  create_boxplot(df_h1, "fleet_utilization", "Fleet Utilization Ratio")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Service Rate
+
+### Descriptive Statistics
+
+```{r h1_service_desc}
+run_h1_service <- "service_rate" %in% colnames(df_h1)
+if (run_h1_service) {
+  create_summary_table(df_h1, "service_rate") %>% kable()
+} else {
+  warning("Metric 'service_rate' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h1_service_anova}
+if (run_h1_service) {
+  create_anova_table(df_h1, "service_rate") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h1_service_eta}
+if (run_h1_service) {
+  create_eta_squared(df_h1, "service_rate") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h1_service_tukey}
+if (run_h1_service) {
+  create_tukey_table(df_h1, "service_rate") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h1_service_plot}
+if (run_h1_service) {
+  create_boxplot(df_h1, "service_rate", "Service Rate (Served / Effective Demand)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Demand-Supply Mismatch
+
+### Descriptive Statistics
+
+```{r h1_mismatch_desc}
+run_h1_mismatch <- "demand_supply_mismatch" %in% colnames(df_h1)
+if (run_h1_mismatch) {
+  create_summary_table(df_h1, "demand_supply_mismatch") %>% kable()
+} else {
+  warning("Metric 'demand_supply_mismatch' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h1_mismatch_anova}
+if (run_h1_mismatch) {
+  create_anova_table(df_h1, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h1_mismatch_eta}
+if (run_h1_mismatch) {
+  create_eta_squared(df_h1, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h1_mismatch_tukey}
+if (run_h1_mismatch) {
+  create_tukey_table(df_h1, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h1_mismatch_plot}
+if (run_h1_mismatch) {
+  create_boxplot(df_h1, "demand_supply_mismatch", "Demand-Supply Mismatch Index")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Vehicle Concentration
+
+### Descriptive Statistics
+
+```{r h1_vc_desc}
+run_h1_vc <- "vehicle_concentration" %in% colnames(df_h1)
+if (run_h1_vc) {
+  create_summary_table(df_h1, "vehicle_concentration") %>% kable()
+} else {
+  warning("Metric 'vehicle_concentration' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h1_vc_anova}
+if (run_h1_vc) {
+  create_anova_table(df_h1, "vehicle_concentration") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h1_vc_eta}
+if (run_h1_vc) {
+  create_eta_squared(df_h1, "vehicle_concentration") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h1_vc_tukey}
+if (run_h1_vc) {
+  create_tukey_table(df_h1, "vehicle_concentration") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h1_vc_plot}
+if (run_h1_vc) {
+  create_boxplot(df_h1, "vehicle_concentration", "Vehicle Concentration (SD of Idle Vehicles)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+# 6.2 H2 – Interaction Effects
+
+This section evaluates the interaction of mechanisms by comparing scenarios where a single mechanism is active against the scenario where both mechanisms interact freely: **pricing_only** (demand mechanism), **rebalancing_only** (supply mechanism), and **interaction** (pricing and rebalancing active simultaneously).
+
+```{r h2_data}
+h2_scenarios <- c("pricing_only", "rebalancing_only", "interaction")
+df_h2 <- df_full %>% 
+  filter(scenario %in% h2_scenarios) %>%
+  mutate(scenario = factor(scenario, levels = h2_scenarios))
+```
+
+## Price Volatility
+
+### Descriptive Statistics
+
+```{r h2_pvol_desc}
+run_h2_pvol <- "price_volatility" %in% colnames(df_h2)
+if (run_h2_pvol) {
+  create_summary_table(df_h2, "price_volatility") %>% kable()
+} else {
+  warning("Metric 'price_volatility' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_pvol_anova}
+if (run_h2_pvol) {
+  create_anova_table(df_h2, "price_volatility") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_pvol_eta}
+if (run_h2_pvol) {
+  create_eta_squared(df_h2, "price_volatility") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_pvol_tukey}
+if (run_h2_pvol) {
+  create_tukey_table(df_h2, "price_volatility") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_pvol_plot}
+if (run_h2_pvol) {
+  create_boxplot(df_h2, "price_volatility", "Price Volatility (SD of Prices)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Oscillation Index
+
+### Descriptive Statistics
+
+```{r h2_osc_desc}
+run_h2_osc <- "oscillation_index" %in% colnames(df_h2)
+if (run_h2_osc) {
+  create_summary_table(df_h2, "oscillation_index") %>% kable()
+} else {
+  warning("Metric 'oscillation_index' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_osc_anova}
+if (run_h2_osc) {
+  create_anova_table(df_h2, "oscillation_index") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_osc_eta}
+if (run_h2_osc) {
+  create_eta_squared(df_h2, "oscillation_index") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_osc_tukey}
+if (run_h2_osc) {
+  create_tukey_table(df_h2, "oscillation_index") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_osc_plot}
+if (run_h2_osc) {
+  create_boxplot(df_h2, "oscillation_index", "Price Oscillation Index")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Overload Frequency
+
+### Descriptive Statistics
+
+```{r h2_overload_desc}
+run_h2_overload <- "overload_frequency" %in% colnames(df_h2)
+if (run_h2_overload) {
+  create_summary_table(df_h2, "overload_frequency") %>% kable()
+} else {
+  warning("Metric 'overload_frequency' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_overload_anova}
+if (run_h2_overload) {
+  create_anova_table(df_h2, "overload_frequency") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_overload_eta}
+if (run_h2_overload) {
+  create_eta_squared(df_h2, "overload_frequency") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_overload_tukey}
+if (run_h2_overload) {
+  create_tukey_table(df_h2, "overload_frequency") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_overload_plot}
+if (run_h2_overload) {
+  create_boxplot(df_h2, "overload_frequency", "Overload Frequency (Service Rate <= 70%)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Persistence of Demand-Supply Mismatch
+
+### Descriptive Statistics
+
+```{r h2_pers_desc}
+run_h2_pers <- "persistence_demand_supply_mismatch" %in% colnames(df_h2)
+if (run_h2_pers) {
+  create_summary_table(df_h2, "persistence_demand_supply_mismatch") %>% kable()
+} else {
+  warning("Metric 'persistence_demand_supply_mismatch' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_pers_anova}
+if (run_h2_pers) {
+  create_anova_table(df_h2, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_pers_eta}
+if (run_h2_pers) {
+  create_eta_squared(df_h2, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_pers_tukey}
+if (run_h2_pers) {
+  create_tukey_table(df_h2, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_pers_plot}
+if (run_h2_pers) {
+  create_boxplot(df_h2, "persistence_demand_supply_mismatch", "Persistence of Demand-Supply Mismatch (>0.15)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Demand-Supply Mismatch
+
+### Descriptive Statistics
+
+```{r h2_mismatch_desc}
+run_h2_mismatch <- "demand_supply_mismatch" %in% colnames(df_h2)
+if (run_h2_mismatch) {
+  create_summary_table(df_h2, "demand_supply_mismatch") %>% kable()
+} else {
+  warning("Metric 'demand_supply_mismatch' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_mismatch_anova}
+if (run_h2_mismatch) {
+  create_anova_table(df_h2, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_mismatch_eta}
+if (run_h2_mismatch) {
+  create_eta_squared(df_h2, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_mismatch_tukey}
+if (run_h2_mismatch) {
+  create_tukey_table(df_h2, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_mismatch_plot}
+if (run_h2_mismatch) {
+  create_boxplot(df_h2, "demand_supply_mismatch", "Demand-Supply Mismatch Index")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Vehicle Concentration
+
+### Descriptive Statistics
+
+```{r h2_vc_desc}
+run_h2_vc <- "vehicle_concentration" %in% colnames(df_h2)
+if (run_h2_vc) {
+  create_summary_table(df_h2, "vehicle_concentration") %>% kable()
+} else {
+  warning("Metric 'vehicle_concentration' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_vc_anova}
+if (run_h2_vc) {
+  create_anova_table(df_h2, "vehicle_concentration") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_vc_eta}
+if (run_h2_vc) {
+  create_eta_squared(df_h2, "vehicle_concentration") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_vc_tukey}
+if (run_h2_vc) {
+  create_tukey_table(df_h2, "vehicle_concentration") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_vc_plot}
+if (run_h2_vc) {
+  create_boxplot(df_h2, "vehicle_concentration", "Vehicle Concentration (SD of Idle Vehicles)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Revenue per Vehicle
+
+### Descriptive Statistics
+
+```{r h2_rev_desc}
+run_h2_rev <- "revenue_per_vehicle" %in% colnames(df_h2)
+if (run_h2_rev) {
+  create_summary_table(df_h2, "revenue_per_vehicle") %>% kable()
+} else {
+  warning("Metric 'revenue_per_vehicle' is missing from the dataset. Skipping...")
+}
+```
+
+### One-Way ANOVA
+
+```{r h2_rev_anova}
+if (run_h2_rev) {
+  create_anova_table(df_h2, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h2_rev_eta}
+if (run_h2_rev) {
+  create_eta_squared(df_h2, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Secondary Post-Hoc Analysis (Tukey HSD)
+
+For later thesis writing support and pairwise scenario comparisons:
+
+```{r h2_rev_tukey}
+if (run_h2_rev) {
+  create_tukey_table(df_h2, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h2_rev_plot}
+if (run_h2_rev) {
+  create_boxplot(df_h2, "revenue_per_vehicle", "Revenue per Vehicle ($)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+# 6.3 Governance Parameter Selection
+
+This section evaluates the governance parameter sweep and identifies the configuration used for the subsequent hypothesis tests. The parameter grid consists of 27 combinations of the governance parameters $\delta$, $\theta$, and $R_{max}$.
+
+Configurations were assessed relative to the unconstrained **Interaction** scenario using a balanced evaluation criterion that considered both stability improvements (e.g., lower price volatility and oscillation) and operational performance (e.g., service rate and revenue). Configurations associated with substantial performance degradation were excluded from consideration. The highest-ranked remaining configuration was selected and used throughout the governance experiments reported in this thesis.
+
+```{r governance_selection, echo=FALSE}
+# Extract baseline interaction means
+df_interaction_baseline <- df_full %>% filter(scenario == "interaction")
+interaction_means <- df_interaction_baseline %>%
+  summarise(
+    revenue_per_vehicle = mean(revenue_per_vehicle, na.rm = TRUE),
+    service_rate = mean(service_rate, na.rm = TRUE),
+    price_volatility = mean(price_volatility, na.rm = TRUE),
+    oscillation_index = mean(oscillation_index, na.rm = TRUE),
+    overload_frequency = mean(overload_frequency, na.rm = TRUE),
+    demand_supply_mismatch = mean(demand_supply_mismatch, na.rm = TRUE),
+    persistence_demand_supply_mismatch = mean(persistence_demand_supply_mismatch, na.rm = TRUE),
+    vehicle_concentration = mean(vehicle_concentration, na.rm = TRUE)
+  )
+
+# Extract and group governance runs
+df_gov_all <- df_full %>% filter(scenario == "governance")
+gov_grid <- df_gov_all %>%
+  group_by(governance_delta, governance_theta, governance_R_max) %>%
+  summarise(
+    revenue_per_vehicle_mean = mean(revenue_per_vehicle, na.rm = TRUE),
+    service_rate_mean = mean(service_rate, na.rm = TRUE),
+    price_volatility_mean = mean(price_volatility, na.rm = TRUE),
+    oscillation_index_mean = mean(oscillation_index, na.rm = TRUE),
+    overload_frequency_mean = mean(overload_frequency, na.rm = TRUE),
+    demand_supply_mismatch_mean = mean(demand_supply_mismatch, na.rm = TRUE),
+    persistence_demand_supply_mismatch_mean = mean(persistence_demand_supply_mismatch, na.rm = TRUE),
+    vehicle_concentration_mean = mean(vehicle_concentration, na.rm = TRUE),
+    N = n(),
+    .groups = "drop"
+  )
+
+# Calculate scores and exclusions
+selection_scores <- gov_grid %>%
+  mutate(
+    # Efficiency changes (higher is better)
+    revenue_per_vehicle_change = (revenue_per_vehicle_mean - interaction_means$revenue_per_vehicle) / abs(interaction_means$revenue_per_vehicle),
+    service_rate_change = (service_rate_mean - interaction_means$service_rate) / abs(interaction_means$service_rate),
+    
+    # Stability/stress improvements (lower is better)
+    price_volatility_improvement = (interaction_means$price_volatility - price_volatility_mean) / abs(interaction_means$price_volatility),
+    oscillation_index_improvement = (interaction_means$oscillation_index - oscillation_index_mean) / abs(interaction_means$oscillation_index),
+    overload_frequency_improvement = (interaction_means$overload_frequency - overload_frequency_mean) / abs(interaction_means$overload_frequency),
+    demand_supply_mismatch_improvement = (interaction_means$demand_supply_mismatch - demand_supply_mismatch_mean) / abs(interaction_means$demand_supply_mismatch),
+    
+    # Exclusions
+    excluded = (service_rate_change < -0.10) | 
+               (revenue_per_vehicle_change < -0.10) | 
+               (overload_frequency_improvement < -0.10),
+    
+    # Balanced score
+    balanced_score = 0.35 * price_volatility_improvement +
+                     0.25 * oscillation_index_improvement +
+                     0.15 * overload_frequency_improvement +
+                     0.10 * demand_supply_mismatch_improvement +
+                     0.10 * service_rate_change +
+                     0.05 * revenue_per_vehicle_change
+  )
+
+# Selection logic
+non_excluded_configs <- selection_scores %>% filter(!excluded)
+
+if (nrow(non_excluded_configs) > 0) {
+  selected_config <- non_excluded_configs %>%
+    arrange(desc(balanced_score)) %>%
+    slice(1)
+  fallback_used <- FALSE
+  reason_str <- "Selected automatically as the best balanced governance configuration based on stability improvement and operational performance constraints."
+} else {
+  # Fallback: smallest service_rate loss and lowest price_volatility
+  selected_config <- selection_scores %>%
+    arrange(desc(service_rate_change), price_volatility_mean) %>%
+    slice(1)
+  fallback_used <- TRUE
+  reason_str <- "Selected automatically under fallback rules (smallest service rate loss and lowest price volatility) because all sweep configurations exceeded the maximum operational degradation constraints."
+  warning("All governance configurations violated the hard operational constraints. Fallback selection triggered.")
+}
+
+selected_delta <- selected_config$governance_delta
+selected_theta <- selected_config$governance_theta
+selected_R_max <- selected_config$governance_R_max
+selected_score <- selected_config$balanced_score
+
+# Output Table 1: Governance Grid Summary Table
+grid_summary_table <- gov_grid %>%
+  select(
+    governance_delta,
+    governance_theta,
+    governance_R_max,
+    N,
+    revenue_per_vehicle_mean,
+    service_rate_mean,
+    price_volatility_mean,
+    oscillation_index_mean,
+    overload_frequency_mean,
+    demand_supply_mismatch_mean,
+    persistence_demand_supply_mismatch_mean,
+    vehicle_concentration_mean
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Output Table 2: Governance Selection Score Table (Top 10 sorted by score desc)
+selection_score_table <- selection_scores %>%
+  select(
+    governance_delta,
+    governance_theta,
+    governance_R_max,
+    revenue_per_vehicle_change,
+    service_rate_change,
+    price_volatility_improvement,
+    oscillation_index_improvement,
+    overload_frequency_improvement,
+    demand_supply_mismatch_improvement,
+    balanced_score,
+    excluded
+  ) %>%
+  arrange(desc(balanced_score)) %>%
+  slice(1:10) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Output Table 3: Selected Governance Configuration Table (exactly one row)
+selected_config_table <- tibble(
+  governance_delta = selected_delta,
+  governance_theta = selected_theta,
+  governance_R_max = selected_R_max,
+  balanced_score = round(selected_score, 3),
+  reason_selected = reason_str
+)
+
+# Instantiate Selected Datasets for H3 and H4 comparisons
+df_h3_selected <- df_full %>%
+  filter(
+    (scenario == "interaction") |
+    (scenario == "governance" & 
+     governance_delta == selected_delta & 
+     governance_theta == selected_theta & 
+     governance_R_max == selected_R_max)
+  ) %>%
+  mutate(scenario = factor(scenario, levels = c("interaction", "governance")))
+
+df_h4_single_selected <- df_full %>%
+  filter(
+    (scenario == "interaction_demand_shock") |
+    (scenario == "governance_demand_shock" & 
+     governance_delta == selected_delta & 
+     governance_theta == selected_theta & 
+     governance_R_max == selected_R_max)
+  ) %>%
+  mutate(scenario = factor(scenario, levels = c("interaction_demand_shock", "governance_demand_shock")))
+
+df_h4_repeated_selected <- df_full %>%
+  filter(
+    (scenario == "interaction_repeated_demand_shocks") |
+    (scenario == "governance_repeated_demand_shocks" & 
+     governance_delta == selected_delta & 
+     governance_theta == selected_theta & 
+     governance_R_max == selected_R_max)
+  ) %>%
+  mutate(scenario = factor(scenario, levels = c("interaction_repeated_demand_shocks", "governance_repeated_demand_shocks")))
+
+# Display tables
+print_kable(grid_summary_table, caption = "Summary Table 6.3a: Governance Parameter Grid Mean Performance Metrics")
+print_kable(selection_score_table, caption = "Summary Table 6.3b: Governance Parameter Configurations Ranked by Balanced Score (Top 10)")
+print_kable(selected_config_table, caption = "Summary Table 6.3c: Selected Governance Configuration")
+```
+
+------------------------------------------------------------------------
+
+# 6.4 H3 – Governance Effects
+
+This section evaluates the effects of algorithmic governance by comparing the unconstrained **Interaction** scenario with the selected **Governance** configuration. The analysis examines whether governance interventions improve system stability while maintaining acceptable operational performance.
+
+```{r h3_data}
+df_h3 <- df_h3_selected
+df_h3 %>% count(scenario) %>% print_kable(caption = "Sample Size Verification for Hypothesis H3 Selected Configuration")
+```
+
+## Revenue per Vehicle
+
+### Descriptive Statistics
+
+```{r h3_rev_desc}
+run_h3_rev <- "revenue_per_vehicle" %in% colnames(df_h3)
+if (run_h3_rev) {
+  create_summary_table(df_h3, "revenue_per_vehicle") %>% kable()
+} else {
+  warning("Metric 'revenue_per_vehicle' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_rev_ttest}
+if (run_h3_rev) {
+  create_ttest_table(df_h3, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_rev_eta}
+if (run_h3_rev) {
+  create_eta_squared(df_h3, "revenue_per_vehicle") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_rev_plot}
+if (run_h3_rev) {
+  create_boxplot(df_h3, "revenue_per_vehicle", "Revenue per Vehicle ($)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Fleet Utilization
+
+### Descriptive Statistics
+
+```{r h3_util_desc}
+run_h3_util <- "fleet_utilization" %in% colnames(df_h3)
+if (run_h3_util) {
+  create_summary_table(df_h3, "fleet_utilization") %>% kable()
+} else {
+  warning("Metric 'fleet_utilization' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_util_ttest}
+if (run_h3_util) {
+  create_ttest_table(df_h3, "fleet_utilization") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_util_eta}
+if (run_h3_util) {
+  create_eta_squared(df_h3, "fleet_utilization") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_util_plot}
+if (run_h3_util) {
+  create_boxplot(df_h3, "fleet_utilization", "Fleet Utilization Ratio")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Service Rate
+
+### Descriptive Statistics
+
+```{r h3_service_desc}
+run_h3_service <- "service_rate" %in% colnames(df_h3)
+if (run_h3_service) {
+  create_summary_table(df_h3, "service_rate") %>% kable()
+} else {
+  warning("Metric 'service_rate' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_service_ttest}
+if (run_h3_service) {
+  create_ttest_table(df_h3, "service_rate") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_service_eta}
+if (run_h3_service) {
+  create_eta_squared(df_h3, "service_rate") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_service_plot}
+if (run_h3_service) {
+  create_boxplot(df_h3, "service_rate", "Service Rate (Served / Effective Demand)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Price Volatility
+
+### Descriptive Statistics
+
+```{r h3_pvol_desc}
+run_h3_pvol <- "price_volatility" %in% colnames(df_h3)
+if (run_h3_pvol) {
+  create_summary_table(df_h3, "price_volatility") %>% kable()
+} else {
+  warning("Metric 'price_volatility' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_pvol_ttest}
+if (run_h3_pvol) {
+  create_ttest_table(df_h3, "price_volatility") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_pvol_eta}
+if (run_h3_pvol) {
+  create_eta_squared(df_h3, "price_volatility") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_pvol_plot}
+if (run_h3_pvol) {
+  create_boxplot(df_h3, "price_volatility", "Price Volatility (SD of Prices)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Oscillation Index
+
+### Descriptive Statistics
+
+```{r h3_osc_desc}
+run_h3_osc <- "oscillation_index" %in% colnames(df_h3)
+if (run_h3_osc) {
+  create_summary_table(df_h3, "oscillation_index") %>% kable()
+} else {
+  warning("Metric 'oscillation_index' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_osc_ttest}
+if (run_h3_osc) {
+  create_ttest_table(df_h3, "oscillation_index") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_osc_eta}
+if (run_h3_osc) {
+  create_eta_squared(df_h3, "oscillation_index") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_osc_plot}
+if (run_h3_osc) {
+  create_boxplot(df_h3, "oscillation_index", "Price Oscillation Index")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Overload Frequency
+
+### Descriptive Statistics
+
+```{r h3_overload_desc}
+run_h3_overload <- "overload_frequency" %in% colnames(df_h3)
+if (run_h3_overload) {
+  create_summary_table(df_h3, "overload_frequency") %>% kable()
+} else {
+  warning("Metric 'overload_frequency' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_overload_ttest}
+if (run_h3_overload) {
+  create_ttest_table(df_h3, "overload_frequency") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_overload_eta}
+if (run_h3_overload) {
+  create_eta_squared(df_h3, "overload_frequency") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_overload_plot}
+if (run_h3_overload) {
+  create_boxplot(df_h3, "overload_frequency", "Overload Frequency (Service Rate <= 70%)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Demand-Supply Mismatch
+
+### Descriptive Statistics
+
+```{r h3_mismatch_desc}
+run_h3_mismatch <- "demand_supply_mismatch" %in% colnames(df_h3)
+if (run_h3_mismatch) {
+  create_summary_table(df_h3, "demand_supply_mismatch") %>% kable()
+} else {
+  warning("Metric 'demand_supply_mismatch' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_mismatch_ttest}
+if (run_h3_mismatch) {
+  create_ttest_table(df_h3, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_mismatch_eta}
+if (run_h3_mismatch) {
+  create_eta_squared(df_h3, "demand_supply_mismatch") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_mismatch_plot}
+if (run_h3_mismatch) {
+  create_boxplot(df_h3, "demand_supply_mismatch", "Demand-Supply Mismatch Index")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Persistence of Demand-Supply Mismatch
+
+### Descriptive Statistics
+
+```{r h3_pers_desc}
+run_h3_pers <- "persistence_demand_supply_mismatch" %in% colnames(df_h3)
+if (run_h3_pers) {
+  create_summary_table(df_h3, "persistence_demand_supply_mismatch") %>% kable()
+} else {
+  warning("Metric 'persistence_demand_supply_mismatch' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_pers_ttest}
+if (run_h3_pers) {
+  create_ttest_table(df_h3, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_pers_eta}
+if (run_h3_pers) {
+  create_eta_squared(df_h3, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_pers_plot}
+if (run_h3_pers) {
+  create_boxplot(df_h3, "persistence_demand_supply_mismatch", "Persistence of Demand-Supply Mismatch (>0.15)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Vehicle Concentration
+
+### Descriptive Statistics
+
+```{r h3_vc_desc}
+run_h3_vc <- "vehicle_concentration" %in% colnames(df_h3)
+if (run_h3_vc) {
+  create_summary_table(df_h3, "vehicle_concentration") %>% kable()
+} else {
+  warning("Metric 'vehicle_concentration' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_vc_ttest}
+if (run_h3_vc) {
+  create_ttest_table(df_h3, "vehicle_concentration") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_vc_eta}
+if (run_h3_vc) {
+  create_eta_squared(df_h3, "vehicle_concentration") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_vc_plot}
+if (run_h3_vc) {
+  create_boxplot(df_h3, "vehicle_concentration", "Vehicle Concentration (SD of Idle Vehicles)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## Low-Idle Capacity Frequency
+
+### Descriptive Statistics
+
+```{r h3_low_idle_desc}
+run_h3_low_idle <- "low_idle_capacity_frequency" %in% colnames(df_h3)
+if (run_h3_low_idle) {
+  create_summary_table(df_h3, "low_idle_capacity_frequency") %>% kable()
+} else {
+  warning("Metric 'low_idle_capacity_frequency' is missing from the dataset. Skipping...")
+}
+```
+
+### Difference in Means and t-Test
+
+```{r h3_low_idle_ttest}
+if (run_h3_low_idle) {
+  create_ttest_table(df_h3, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+### Effect Size (Eta Squared)
+
+```{r h3_low_idle_eta}
+if (run_h3_low_idle) {
+  create_eta_squared(df_h3, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+### Visualization
+
+```{r h3_low_idle_plot}
+if (run_h3_low_idle) {
+  create_boxplot(df_h3, "low_idle_capacity_frequency", "Low-Idle Capacity Frequency (<10% Idle)")
+}
+```
+
+### Interpretation Notes
+
+------------------------------------------------------------------------
+
+# 6.5 H4 – Demand Shock Effects
+
+This section evaluates the effects of algorithmic governance under demand shock conditions by comparing the unconstrained **Interaction** scenario with the corresponding **Governance** configuration. Two demand shock settings are considered: a single temporary demand shock and repeated demand shocks.
+
+## 6.5.1 Single Demand Shock
+
+This subsection compares the **Interaction Demand Shock** and **Governance Demand Shock** scenarios to assess the effect of governance during a single temporary demand surge.
+
+```{r h4_single_data}
+df_h4_single <- df_h4_single_selected
+df_h4_single %>% count(scenario) %>% print_kable(caption = "Sample Size Verification for Hypothesis H4 Single Shock Selected Configuration")
+```
+
+### Service Rate
+
+#### Descriptive Statistics
+
+```{r h4_s_service_desc}
+run_h4_s_service <- "service_rate" %in% colnames(df_h4_single)
+if (run_h4_s_service) {
+  create_summary_table(df_h4_single, "service_rate") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_service_ttest}
+if (run_h4_s_service) {
+  create_ttest_table(df_h4_single, "service_rate") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_service_eta}
+if (run_h4_s_service) {
+  create_eta_squared(df_h4_single, "service_rate") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_service_plot}
+if (run_h4_s_service) {
+  create_boxplot(df_h4_single, "service_rate", "Service Rate")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Overload Frequency
+
+#### Descriptive Statistics
+
+```{r h4_s_overload_desc}
+run_h4_s_overload <- "overload_frequency" %in% colnames(df_h4_single)
+if (run_h4_s_overload) {
+  create_summary_table(df_h4_single, "overload_frequency") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_overload_ttest}
+if (run_h4_s_overload) {
+  create_ttest_table(df_h4_single, "overload_frequency") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_overload_eta}
+if (run_h4_s_overload) {
+  create_eta_squared(df_h4_single, "overload_frequency") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_overload_plot}
+if (run_h4_s_overload) {
+  create_boxplot(df_h4_single, "overload_frequency", "Overload Frequency (Service Rate <= 70%)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Peak Unmet Demand
+
+#### Descriptive Statistics
+
+```{r h4_s_peak_desc}
+run_h4_s_peak <- "peak_unmet_demand" %in% colnames(df_h4_single)
+if (run_h4_s_peak) {
+  create_summary_table(df_h4_single, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_peak_ttest}
+if (run_h4_s_peak) {
+  create_ttest_table(df_h4_single, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_peak_eta}
+if (run_h4_s_peak) {
+  create_eta_squared(df_h4_single, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_peak_plot}
+if (run_h4_s_peak) {
+  create_boxplot(df_h4_single, "peak_unmet_demand", "Peak Unmet Demand (Requests)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Price Volatility
+
+#### Descriptive Statistics
+
+```{r h4_s_pvol_desc}
+run_h4_s_pvol <- "price_volatility" %in% colnames(df_h4_single)
+if (run_h4_s_pvol) {
+  create_summary_table(df_h4_single, "price_volatility") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_pvol_ttest}
+if (run_h4_s_pvol) {
+  create_ttest_table(df_h4_single, "price_volatility") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_pvol_eta}
+if (run_h4_s_pvol) {
+  create_eta_squared(df_h4_single, "price_volatility") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_pvol_plot}
+if (run_h4_s_pvol) {
+  create_boxplot(df_h4_single, "price_volatility", "Price Volatility")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Oscillation Index
+
+#### Descriptive Statistics
+
+```{r h4_s_osc_desc}
+run_h4_s_osc <- "oscillation_index" %in% colnames(df_h4_single)
+if (run_h4_s_osc) {
+  create_summary_table(df_h4_single, "oscillation_index") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_osc_ttest}
+if (run_h4_s_osc) {
+  create_ttest_table(df_h4_single, "oscillation_index") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_osc_eta}
+if (run_h4_s_osc) {
+  create_eta_squared(df_h4_single, "oscillation_index") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_osc_plot}
+if (run_h4_s_osc) {
+  create_boxplot(df_h4_single, "oscillation_index", "Price Oscillation Index")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Demand-Supply Mismatch
+
+#### Descriptive Statistics
+
+```{r h4_s_mismatch_desc}
+run_h4_s_mismatch <- "demand_supply_mismatch" %in% colnames(df_h4_single)
+if (run_h4_s_mismatch) {
+  create_summary_table(df_h4_single, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_mismatch_ttest}
+if (run_h4_s_mismatch) {
+  create_ttest_table(df_h4_single, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_mismatch_eta}
+if (run_h4_s_mismatch) {
+  create_eta_squared(df_h4_single, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_mismatch_plot}
+if (run_h4_s_mismatch) {
+  create_boxplot(df_h4_single, "demand_supply_mismatch", "Demand-Supply Mismatch Index")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Persistence of Demand-Supply Mismatch
+
+#### Descriptive Statistics
+
+```{r h4_s_pers_desc}
+run_h4_s_pers <- "persistence_demand_supply_mismatch" %in% colnames(df_h4_single)
+if (run_h4_s_pers) {
+  create_summary_table(df_h4_single, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_pers_ttest}
+if (run_h4_s_pers) {
+  create_ttest_table(df_h4_single, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_pers_eta}
+if (run_h4_s_pers) {
+  create_eta_squared(df_h4_single, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_pers_plot}
+if (run_h4_s_pers) {
+  create_boxplot(df_h4_single, "persistence_demand_supply_mismatch", "Persistence of Demand-Supply Mismatch")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Vehicle Concentration
+
+#### Descriptive Statistics
+
+```{r h4_s_vc_desc}
+run_h4_s_vc <- "vehicle_concentration" %in% colnames(df_h4_single)
+if (run_h4_s_vc) {
+  create_summary_table(df_h4_single, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_vc_ttest}
+if (run_h4_s_vc) {
+  create_ttest_table(df_h4_single, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_vc_eta}
+if (run_h4_s_vc) {
+  create_eta_squared(df_h4_single, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_vc_plot}
+if (run_h4_s_vc) {
+  create_boxplot(df_h4_single, "vehicle_concentration", "Vehicle Concentration (SD of Idle Vehicles)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Revenue per Vehicle
+
+#### Descriptive Statistics
+
+```{r h4_s_rev_desc}
+run_h4_s_rev <- "revenue_per_vehicle" %in% colnames(df_h4_single)
+if (run_h4_s_rev) {
+  create_summary_table(df_h4_single, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_rev_ttest}
+if (run_h4_s_rev) {
+  create_ttest_table(df_h4_single, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_rev_eta}
+if (run_h4_s_rev) {
+  create_eta_squared(df_h4_single, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_rev_plot}
+if (run_h4_s_rev) {
+  create_boxplot(df_h4_single, "revenue_per_vehicle", "Revenue per Vehicle ($)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Low-Idle Capacity Frequency
+
+#### Descriptive Statistics
+
+```{r h4_s_low_idle_desc}
+run_h4_s_low_idle <- "low_idle_capacity_frequency" %in% colnames(df_h4_single)
+if (run_h4_s_low_idle) {
+  create_summary_table(df_h4_single, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_s_low_idle_ttest}
+if (run_h4_s_low_idle) {
+  create_ttest_table(df_h4_single, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_s_low_idle_eta}
+if (run_h4_s_low_idle) {
+  create_eta_squared(df_h4_single, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_s_low_idle_plot}
+if (run_h4_s_low_idle) {
+  create_boxplot(df_h4_single, "low_idle_capacity_frequency", "Low-Idle Capacity Frequency (<10% Idle)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+## 6.5.2 Repeated Demand Shocks
+
+This subsection compares the **Interaction Repeated Demand Shocks** and **Governance Repeated Demand Shocks** scenarios to assess the effect of governance under recurring demand surges.
+
+```{r h4_repeated_data}
+df_h4_repeated <- df_h4_repeated_selected
+df_h4_repeated %>% count(scenario) %>% print_kable(caption = "Sample Size Verification for Hypothesis H4 Repeated Shocks Selected Configuration")
+```
+
+### Service Rate
+
+#### Descriptive Statistics
+
+```{r h4_r_service_desc}
+run_h4_r_service <- "service_rate" %in% colnames(df_h4_repeated)
+if (run_h4_r_service) {
+  create_summary_table(df_h4_repeated, "service_rate") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_service_ttest}
+if (run_h4_r_service) {
+  create_ttest_table(df_h4_repeated, "service_rate") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_service_eta}
+if (run_h4_r_service) {
+  create_eta_squared(df_h4_repeated, "service_rate") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_service_plot}
+if (run_h4_r_service) {
+  create_boxplot(df_h4_repeated, "service_rate", "Service Rate")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Overload Frequency
+
+#### Descriptive Statistics
+
+```{r h4_r_overload_desc}
+run_h4_r_overload <- "overload_frequency" %in% colnames(df_h4_repeated)
+if (run_h4_r_overload) {
+  create_summary_table(df_h4_repeated, "overload_frequency") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_overload_ttest}
+if (run_h4_r_overload) {
+  create_ttest_table(df_h4_repeated, "overload_frequency") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_overload_eta}
+if (run_h4_r_overload) {
+  create_eta_squared(df_h4_repeated, "overload_frequency") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_overload_plot}
+if (run_h4_r_overload) {
+  create_boxplot(df_h4_repeated, "overload_frequency", "Overload Frequency (Service Rate <= 70%)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Peak Unmet Demand
+
+#### Descriptive Statistics
+
+```{r h4_r_peak_desc}
+run_h4_r_peak <- "peak_unmet_demand" %in% colnames(df_h4_repeated)
+if (run_h4_r_peak) {
+  create_summary_table(df_h4_repeated, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_peak_ttest}
+if (run_h4_r_peak) {
+  create_ttest_table(df_h4_repeated, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_peak_eta}
+if (run_h4_r_peak) {
+  create_eta_squared(df_h4_repeated, "peak_unmet_demand") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_peak_plot}
+if (run_h4_r_peak) {
+  create_boxplot(df_h4_repeated, "peak_unmet_demand", "Peak Unmet Demand (Requests)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Price Volatility
+
+#### Descriptive Statistics
+
+```{r h4_r_pvol_desc}
+run_h4_r_pvol <- "price_volatility" %in% colnames(df_h4_repeated)
+if (run_h4_r_pvol) {
+  create_summary_table(df_h4_repeated, "price_volatility") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_pvol_ttest}
+if (run_h4_r_pvol) {
+  create_ttest_table(df_h4_repeated, "price_volatility") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_pvol_eta}
+if (run_h4_r_pvol) {
+  create_eta_squared(df_h4_repeated, "price_volatility") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_pvol_plot}
+if (run_h4_r_pvol) {
+  create_boxplot(df_h4_repeated, "price_volatility", "Price Volatility")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Oscillation Index
+
+#### Descriptive Statistics
+
+```{r h4_r_osc_desc}
+run_h4_r_osc <- "oscillation_index" %in% colnames(df_h4_repeated)
+if (run_h4_r_osc) {
+  create_summary_table(df_h4_repeated, "oscillation_index") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_osc_ttest}
+if (run_h4_r_osc) {
+  create_ttest_table(df_h4_repeated, "oscillation_index") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_osc_eta}
+if (run_h4_r_osc) {
+  create_eta_squared(df_h4_repeated, "oscillation_index") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_osc_plot}
+if (run_h4_r_osc) {
+  create_boxplot(df_h4_repeated, "oscillation_index", "Price Oscillation Index")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Demand-Supply Mismatch
+
+#### Descriptive Statistics
+
+```{r h4_r_mismatch_desc}
+run_h4_r_mismatch <- "demand_supply_mismatch" %in% colnames(df_h4_repeated)
+if (run_h4_r_mismatch) {
+  create_summary_table(df_h4_repeated, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_mismatch_ttest}
+if (run_h4_r_mismatch) {
+  create_ttest_table(df_h4_repeated, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_mismatch_eta}
+if (run_h4_r_mismatch) {
+  create_eta_squared(df_h4_repeated, "demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_mismatch_plot}
+if (run_h4_r_mismatch) {
+  create_boxplot(df_h4_repeated, "demand_supply_mismatch", "Demand-Supply Mismatch Index")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Persistence of Demand-Supply Mismatch
+
+#### Descriptive Statistics
+
+```{r h4_r_pers_desc}
+run_h4_r_pers <- "persistence_demand_supply_mismatch" %in% colnames(df_h4_repeated)
+if (run_h4_r_pers) {
+  create_summary_table(df_h4_repeated, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_pers_ttest}
+if (run_h4_r_pers) {
+  create_ttest_table(df_h4_repeated, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_pers_eta}
+if (run_h4_r_pers) {
+  create_eta_squared(df_h4_repeated, "persistence_demand_supply_mismatch") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_pers_plot}
+if (run_h4_r_pers) {
+  create_boxplot(df_h4_repeated, "persistence_demand_supply_mismatch", "Persistence of Demand-Supply Mismatch")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Vehicle Concentration
+
+#### Descriptive Statistics
+
+```{r h4_r_vc_desc}
+run_h4_r_vc <- "vehicle_concentration" %in% colnames(df_h4_repeated)
+if (run_h4_r_vc) {
+  create_summary_table(df_h4_repeated, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_vc_ttest}
+if (run_h4_r_vc) {
+  create_ttest_table(df_h4_repeated, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_vc_eta}
+if (run_h4_r_vc) {
+  create_eta_squared(df_h4_repeated, "vehicle_concentration") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_vc_plot}
+if (run_h4_r_vc) {
+  create_boxplot(df_h4_repeated, "vehicle_concentration", "Vehicle Concentration (SD of Idle Vehicles)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Revenue per Vehicle
+
+#### Descriptive Statistics
+
+```{r h4_r_rev_desc}
+run_h4_r_rev <- "revenue_per_vehicle" %in% colnames(df_h4_repeated)
+if (run_h4_r_rev) {
+  create_summary_table(df_h4_repeated, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_rev_ttest}
+if (run_h4_r_rev) {
+  create_ttest_table(df_h4_repeated, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_rev_eta}
+if (run_h4_r_rev) {
+  create_eta_squared(df_h4_repeated, "revenue_per_vehicle") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_rev_plot}
+if (run_h4_r_rev) {
+  create_boxplot(df_h4_repeated, "revenue_per_vehicle", "Revenue per Vehicle ($)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+### Low-Idle Capacity Frequency
+
+#### Descriptive Statistics
+
+```{r h4_r_low_idle_desc}
+run_h4_r_low_idle <- "low_idle_capacity_frequency" %in% colnames(df_h4_repeated)
+if (run_h4_r_low_idle) {
+  create_summary_table(df_h4_repeated, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Difference in Means and t-Test
+
+```{r h4_r_low_idle_ttest}
+if (run_h4_r_low_idle) {
+  create_ttest_table(df_h4_repeated, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Effect Size (Eta Squared)
+
+```{r h4_r_low_idle_eta}
+if (run_h4_r_low_idle) {
+  create_eta_squared(df_h4_repeated, "low_idle_capacity_frequency") %>% kable()
+}
+```
+
+#### Visualization
+
+```{r h4_r_low_idle_plot}
+if (run_h4_r_low_idle) {
+  create_boxplot(df_h4_repeated, "low_idle_capacity_frequency", "Low-Idle Capacity Frequency (<10% Idle)")
+}
+```
+
+#### Interpretation Notes
+
+------------------------------------------------------------------------
+
+# 6.6 Summary of Results
+
+Summary tables combining descriptive and inferential statistics across all scenarios.
+
+```{r summaries_compilation}
+# Compilation of all summary tables using selected configurations
+table_h1 <- build_h1_summary_table(df_h1)
+table_h2 <- build_h2_summary_table(df_h2)
+table_h3 <- build_h3_summary_table(df_h3_selected)
+table_h4_single <- build_h4_single_summary_table(df_h4_single_selected)
+table_h4_repeated <- build_h4_repeated_summary_table(df_h4_repeated_selected)
+```
+
+### Hypothesis H1 Summary Table (Individual Mechanisms)
+
+```{r print_table_h1}
+print_kable(table_h1, caption = "Summary Table 1: Hypothesis H1 Summary Table (Individual Mechanisms)")
+```
+
+### Hypothesis H2 Summary Table (Interaction Effects)
+
+```{r print_table_h2}
+print_kable(table_h2, caption = "Summary Table 2: Hypothesis H2 Summary Table (Interaction Effects)")
+```
+
+### Hypothesis H3 Summary Table (Governance Effects)
+
+```{r print_table_h3}
+print_kable(table_h3, caption = "Summary Table 3: Hypothesis H3 Summary Table (Governance Effects)")
+```
+
+### Hypothesis H4 Single Shock Summary Table
+
+```{r print_table_h4_single}
+print_kable(table_h4_single, caption = "Summary Table 4a: Hypothesis H4 Single Shock Summary Table")
+```
+
+### Hypothesis H4 Repeated Shocks Summary Table
+
+```{r print_table_h4_repeated}
+print_kable(table_h4_repeated, caption = "Summary Table 4b: Hypothesis H4 Repeated Shocks Summary Table")
+```
+
+------------------------------------------------------------------------
+
+# Monte Carlo Diagnostics and Calibration Checks
+
+This section presents supplementary diagnostic and calibration analyses used to validate the simulation model and support the interpretation of the main hypothesis results.
+
+```{r mc_diagnostics, echo=FALSE}
+# Helper to calculate summary statistics with 95% Confidence Intervals
+calc_diagnostics <- function(df, metric) {
+  df %>%
+    filter(scenario %in% c("passive", "pricing_only", "rebalancing_only", "interaction")) %>%
+    group_by(scenario) %>%
+    summarise(
+      Mean = mean(.data[[metric]], na.rm = TRUE),
+      SD = sd(.data[[metric]], na.rm = TRUE),
+      N = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      SE = SD / sqrt(N),
+      CI_Lower = Mean - 1.96 * SE,
+      CI_Upper = Mean + 1.96 * SE
+    ) %>%
+    select(scenario, Mean, SD, CI_Lower, CI_Upper) %>%
+    mutate(across(where(is.numeric), ~ round(., 3)))
+}
+
+# Generate stats for the key metrics
+diag_revenue <- calc_diagnostics(df_full, "cumulative_revenue")
+diag_trips <- calc_diagnostics(df_full, "trips_served")
+diag_avg_price <- calc_diagnostics(df_full, "avg_price")
+diag_idle <- calc_diagnostics(df_full, "avg_idle_vehicles")
+diag_unmet <- calc_diagnostics(df_full, "avg_unmet_demand")
+
+# Generate stats for Zone Prices (C, A, R1)
+diag_price_c <- calc_diagnostics(df_full, "avg_price_C")
+diag_price_a <- calc_diagnostics(df_full, "avg_price_A")
+diag_price_r1 <- calc_diagnostics(df_full, "avg_price_R1")
+```
+
+### Table 6.7a: Total Revenue Diagnostics
+```{r diag_print_revenue, echo=FALSE}
+print_kable(diag_revenue, caption = "Diagnostics Table 1: Cumulative Platform Revenue")
+```
+
+### Table 6.7b: Trips Served / Matched Trips Diagnostics
+```{r diag_print_trips, echo=FALSE}
+print_kable(diag_trips, caption = "Diagnostics Table 2: Total Completed Trips (Trips Served)")
+```
+
+### Table 6.7c: System-Wide Average Price Diagnostics
+```{r diag_print_price, echo=FALSE}
+print_kable(diag_avg_price, caption = "Diagnostics Table 3: Average System-Wide Fare Price ($)")
+```
+
+### Table 6.7d: Average Idle Vehicles Diagnostics
+```{r diag_print_idle, echo=FALSE}
+print_kable(diag_idle, caption = "Diagnostics Table 4: Average Idle Vehicles per Tick")
+```
+
+### Table 6.7e: Average Unmet Demand Diagnostics
+```{r diag_print_unmet, echo=FALSE}
+print_kable(diag_unmet, caption = "Diagnostics Table 5: Average Unmet Demand per Tick")
+```
+
+### Table 6.7f: Zone-Level Average Price Diagnostics (Center / Airport / Residential 1)
+```{r diag_print_zone_prices, echo=FALSE}
+diag_zone_prices <- bind_rows(
+  diag_price_c %>% mutate(Zone = "Center (C)"),
+  diag_price_a %>% mutate(Zone = "Airport (A)"),
+  diag_price_r1 %>% mutate(Zone = "Residential 1 (R1)")
+) %>%
+  select(Zone, scenario, Mean, SD, CI_Lower, CI_Upper)
+
+print_kable(diag_zone_prices, caption = "Diagnostics Table 6: Average Zone Prices (C, A, R1) across Scenarios")
+```
+
+
+---
+
+## Fleet Size Calibration
+
+Prior to the main experiments, a fleet size sensitivity analysis was conducted to support the selection of the baseline calibration. The table below summarizes the corresponding performance metrics across different fleet sizes for the Interaction scenario.
+
+```{r fleet_calibration_data, echo=FALSE}
+# Load calibration data and print table
+df_calib_check <- read_csv("outputs/alpha_fleet_calibration_summary.csv") %>%
+  filter(scenario == "interaction" & alpha == 0.300) %>%
+  select(
+    fleet_size,
+    revenue_per_vehicle,
+    service_rate,
+    overload_frequency,
+    mismatch,
+    avg_idle,
+    avg_unmet,
+    avg_matched
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+print_kable(df_calib_check, caption = "Diagnostics Table 7: Fleet Size Sensitivity Calibration (Interaction Scenario, alpha = 0.300)")
+```
+
+### Calibration Discussion
+
+The fleet size sensitivity analysis was conducted during model development to support the selection of the baseline calibration. The detailed interpretation of fleet size effects is presented in the dedicated Pricing Calibration Diagnostics report and is therefore not repeated here.
