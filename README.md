@@ -76,8 +76,8 @@ Python dependencies are listed in `requirements.txt`.
 Clone the repository:
 
 ```bash
-git clone https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation.git
-cd ThesisMobilityAgentSimulation
+git clone https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation-Replication.git
+cd ThesisMobilityAgentSimulation-Replication
 ```
 
 Create a virtual environment:
@@ -181,5 +181,5 @@ This repository accompanies a master’s thesis and is provided for academic rev
 
 **Christian Mikus**
 
-GitHub: https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation  
+GitHub: https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation-Replication  
 Email: christian.mikus@gmail.com
