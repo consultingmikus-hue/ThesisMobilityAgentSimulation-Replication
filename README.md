@@ -16,9 +16,9 @@ This repository accompanies the master's thesis:
 
 This repository contains the complete simulation framework, experimental scripts, analysis reports, and supporting material used throughout the thesis.
 
-The project implements an agent-based simulation (ABM) of a ride-hailing platform to investigate how interacting autonomous decision mechanisms, including pricing, forecasting, rebalancing, and governance, and their effects on system stability, operational performance, and spatial dynamics.
+The project implements an agent-based simulation (ABM) of a ride-hailing platform to investigate how interacting autonomous decision mechanisms—including pricing, forecasting, rebalancing, and governance—influence system stability, operational performance, and spatial dynamics.
 
-The repository enables reproduction of the reported simulation results and provides an interactive dashboard for exploring the model under different scenarios.
+The repository enables full reproduction of the reported simulation results and provides an interactive dashboard for exploring the model under different scenarios.
 
 ---
 
@@ -47,16 +47,20 @@ README.md
 
 # Interactive Dashboard
 
-An interactive Streamlit dashboard accompanies the thesis, allowing readers to explore the simulation model, compare scenarios, and visualise the resulting system dynamics.
+An interactive Streamlit dashboard accompanies the thesis, allowing readers to explore the simulation model, compare scenarios, and visualize the resulting system dynamics.
 
 **Hosted dashboard**
 
 https://thesismobilityagentsimulation-rbnnmpend6ksbtpczfkxjp.streamlit.app/
 
+The hosted version can be accessed directly through a web browser without any local installation.
+
 **Run locally**
 
 ```bash
-streamlit run src/ui/dashboard.py
+cd ThesisMobilityAgentSimulation-Replication
+source .venv/bin/activate
+python -m streamlit run src/ui/dashboard.py
 ```
 
 ---
@@ -93,55 +97,67 @@ Install the required packages:
 pip install -r requirements.txt
 ```
 
+Run a quick simulation:
+
+```bash
+python -m src.run
+
+```
+
+Run the unit tests:
+
+```bash
+python -m unittest src.test_simulation
+
+```
+
+Launch the interactive dashboard:
+
+```bash
+python -m streamlit run src/ui/dashboard.py
+
+```
 ---
 
 # Reproducing the Results
-
 ## Main Monte Carlo experiments
-
 ```bash
-python experiments/run_monte_carlo.py
-```
+python -m experiments.run_monte_carlo
 
+```
 ## Calibration analyses
-
 ```bash
-python experiments/run_calibration_robustness.py
-```
+python -m experiments.run_calibration_robustness
 
+```
 ## Revenue and pricing diagnostics
-
 ```bash
-python experiments/run_revenue_decomposition.py
+python -m experiments.run_revenue_decomposition
+
 ```
-
 ## Adaptive governance stress tests
-
 ```bash
-python experiments/run_adaptive_stress_test.py
+python -m experiments.run_adaptive_stress_test
+
 ```
 
 ---
 
 # Generating Thesis Figures
-
 ```bash
 Rscript plots/create_main_results_figures.R
 Rscript plots/refine_figure3.R
 Rscript plots/refine_figure4.R
 Rscript plots/refine_adaptive_governance_timeseries.R
 ```
-
 ---
 
 # Rendering the Analysis Reports
-
 ```bash
 quarto render analysis_report.qmd
 quarto render pricing_calibration_diagnostics.qmd
 quarto render adaptive_governance_extension.qmd
 ```
-
 ---
 
 # Reproducibility
@@ -173,7 +189,7 @@ If you use this repository for academic purposes, please cite:
 
 # License
 
-This repository accompanies a master’s thesis and is provided for academic review, research, and reproducibility purposes. Unless otherwise stated, all rights remain with the author.
+This repository accompanies a master's thesis and is provided for academic review, research, and reproducibility purposes. Unless otherwise stated, all rights remain with the author.
 
 ---
 
@@ -181,5 +197,6 @@ This repository accompanies a master’s thesis and is provided for academic rev
 
 **Christian Mikus**
 
-GitHub: https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation-Replication  
+GitHub Repository: https://github.com/consultingmikus-hue/ThesisMobilityAgentSimulation-Replication
+
 Email: christian.mikus@gmail.com
